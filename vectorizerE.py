@@ -550,12 +550,24 @@ def extract_document_structure(markdown_content: str) -> Dict[str, Any]:
     return structure
 
 def get_section_for_line(line_number: int, structure: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Get the section that contains a given line number"""
+    """Get the most specific (deepest) section that contains a given line number.
+    
+    This finds the section with the highest level (most nested) that starts before or at the line number.
+    This ensures chunks are assigned to the most specific section they belong to.
+    """
     sections = structure["sections"]
-    for section in reversed(sections):
-        if section["start_line"] <= line_number:
-            return section
-    return None
+    
+    # Find all sections that contain this line (start_line <= line_number)
+    containing_sections = [s for s in sections if s["start_line"] <= line_number]
+    
+    if not containing_sections:
+        return None
+    
+    # Find the section with the highest level (most nested/deepest)
+    # If levels are equal, prefer the one that starts closest to the line (most recent)
+    most_specific = max(containing_sections, key=lambda s: (s.get("level", 0), s["start_line"]))
+    
+    return most_specific
 
 # ---------------- ENHANCED CHUNKING ---------------- 
 def is_chunk_empty(chunk: Document) -> bool:
@@ -590,7 +602,17 @@ def parse_markdown_enhanced(markdown_content: str, page_mapping: Optional[Dict[s
     """Parse markdown with structure awareness and enhanced metadata"""
     logger.info("Extracting document structure...")
     structure = extract_document_structure(markdown_content)
+    
+    # Log heading level distribution to verify all levels are captured
+    level_counts = {}
+    for header in structure['headers']:
+        level = header.get('level', 0)
+        level_counts[level] = level_counts.get(level, 0) + 1
+    
     logger.info(f"Found {len(structure['sections'])} sections, {len(structure['headers'])} headers, {len(structure['tables'])} tables")
+    if level_counts:
+        level_summary = ", ".join([f"Level {k}: {v}" for k, v in sorted(level_counts.items())])
+        logger.info(f"Heading level distribution: {level_summary}")
     
     # Load page mapping if provided
     line_to_page = None
@@ -610,6 +632,7 @@ def parse_markdown_enhanced(markdown_content: str, page_mapping: Optional[Dict[s
     current_section_path = ""
     
     for line_num, line in enumerate(lines, 1):
+        # Update current section as we process lines
         section = get_section_for_line(line_num, structure)
         if section and section != current_section:
             current_section = section
@@ -623,6 +646,12 @@ def parse_markdown_enhanced(markdown_content: str, page_mapping: Optional[Dict[s
         if current_chunk_size + line_size > CHUNK_SIZE and current_chunk_lines:
             chunk_text = "".join(current_chunk_lines)
             chunk_start_line = line_num - len(current_chunk_lines)
+            
+            # Get the section for the CHUNK'S START LINE (not current line)
+            # This ensures chunks are assigned to the correct section
+            chunk_section = get_section_for_line(chunk_start_line, structure)
+            chunk_section_path = chunk_section["path"] if chunk_section else ""
+            
             # Determine page number for this chunk (use start line's page)
             page_number = None
             if line_to_page and chunk_start_line > 0 and chunk_start_line <= len(line_to_page):
@@ -630,8 +659,8 @@ def parse_markdown_enhanced(markdown_content: str, page_mapping: Optional[Dict[s
             chunk = create_enhanced_chunk(
                 chunk_text,
                 chunk_index,
-                current_section_path,
-                current_section,
+                chunk_section_path,
+                chunk_section,
                 structure,
                 chunk_start_line,
                 page_number
@@ -655,6 +684,12 @@ def parse_markdown_enhanced(markdown_content: str, page_mapping: Optional[Dict[s
     if current_chunk_lines:
         chunk_text = "".join(current_chunk_lines)
         chunk_start_line = len(lines) - len(current_chunk_lines)
+        
+        # Get the section for the CHUNK'S START LINE (not current line)
+        # This ensures chunks are assigned to the correct section
+        chunk_section = get_section_for_line(chunk_start_line, structure)
+        chunk_section_path = chunk_section["path"] if chunk_section else ""
+        
         # Determine page number for this chunk
         page_number = None
         if line_to_page and chunk_start_line > 0 and chunk_start_line <= len(line_to_page):
@@ -662,8 +697,8 @@ def parse_markdown_enhanced(markdown_content: str, page_mapping: Optional[Dict[s
         chunk = create_enhanced_chunk(
             chunk_text,
             chunk_index,
-            current_section_path,
-            current_section,
+            chunk_section_path,
+            chunk_section,
             structure,
             chunk_start_line,
             page_number
@@ -739,10 +774,33 @@ def create_enhanced_chunk(
     
     heading = ""
     lines = text.split("\n")
-    for line in lines[:5]:
-        if line.strip().startswith("#"):
-            heading = re.sub(r"^#+\s*", "", line.strip())
-            break
+    
+    # Strategy 1: If we have section information, prefer the section's title
+    # This ensures chunks get the correct heading from their assigned section
+    if section:
+        section_title = section.get("title", "")
+        if section_title:
+            heading = section_title
+    
+    # Strategy 2: If no section title, try to find a header in the chunk content
+    # Look through the entire chunk for any markdown header (all levels: #, ##, ###, ####, etc.)
+    if not heading:
+        for line in lines:
+            line_stripped = line.strip()
+            # Match any markdown header: #, ##, ###, ####, etc.
+            header_match = re.match(r'^(#+)\s+(.+)$', line_stripped)
+            if header_match:
+                heading = header_match.group(2).strip()
+                break  # Use the first header found
+    
+    # Strategy 3: If still no heading, use the last part of section_path (most specific heading)
+    if not heading and section_path:
+        path_parts = section_path.split(" > ")
+        heading = path_parts[-1] if path_parts else ""
+    
+    # Strategy 4: Only as last resort, use generic chunk name
+    if not heading:
+        heading = f"Chunk {chunk_index + 1}"
     
     has_table = any("|" in line and line.strip().startswith("|") for line in lines)
     
@@ -755,7 +813,7 @@ def create_enhanced_chunk(
     metadata = {
         "chunk_index": chunk_index,
         "chunk_size": len(text),
-        "heading": heading or f"Chunk {chunk_index + 1}",
+        "heading": heading,
         "section_path": section_path or "",
         "section_title": section["title"] if section else "",
         "section_level": section["level"] if section else 0,
@@ -1018,10 +1076,11 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
     # Initialize document graph
     document_graph = DocumentGraph()
     
-    # Build graph structure - track which sections have chunks
+    # Build graph structure - add ALL sections as nodes (not just those with chunks)
+    # This ensures every heading becomes a node in the graph, preserving full hierarchy
     logger.info("Building document graph...")
     
-    # First pass: identify which sections have chunks
+    # Track which sections have chunks (for logging)
     sections_with_chunks = set()
     for chunk in chunks:
         section_path = chunk.metadata.get("section_path", "")
@@ -1033,23 +1092,26 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
     for section in structure["sections"]:
         all_sections_map[section["path"]] = section
     
-    # Collect all section paths that need to be added (including parent sections)
-    sections_to_add = set(sections_with_chunks)
+    # Add ALL sections from the structure as nodes (every heading should be a node)
+    # This ensures complete hierarchical representation
+    sections_to_add = set()
+    for section in structure["sections"]:
+        section_path = section["path"]
+        sections_to_add.add(section_path)
+        
+        # Also add all parent sections in the hierarchy path
+        if " > " in section_path:
+            path_parts = section_path.split(" > ")
+            current_path = ""
+            for i, part in enumerate(path_parts):
+                if i == 0:
+                    current_path = part
+                else:
+                    current_path = current_path + " > " + part
+                sections_to_add.add(current_path)
     
-    # For each section with chunks, add all parent sections in the hierarchy
-    for section_path in sections_with_chunks:
-        # Split the hierarchical path (e.g., "A > B > C" -> ["A", "A > B", "A > B > C"])
-        path_parts = section_path.split(" > ")
-        current_path = ""
-        for i, part in enumerate(path_parts):
-            if i == 0:
-                current_path = part
-            else:
-                current_path = current_path + " > " + part
-            sections_to_add.add(current_path)
-    
-    # Add all section nodes (including parent sections)
-    for section_path in sections_to_add:
+    # Add all section nodes (every heading becomes a node)
+    for section_path in sorted(sections_to_add):
         if section_path in all_sections_map:
             section = all_sections_map[section_path]
             section_node = document_graph.add_section_node(
@@ -1107,7 +1169,9 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
                     document_graph.add_edge(parent_node, child_node, relation="contains_section")
                     section_edges_added += 1
     
-    logger.info(f"Created {len(sections_to_add)} section nodes ({len(sections_with_chunks)} with chunks, {len(sections_to_add) - len(sections_with_chunks)} parent sections)")
+    logger.info(f"Created {len(sections_to_add)} section nodes (all headings from document structure)")
+    logger.info(f"  - Sections with chunks: {len(sections_with_chunks)}")
+    logger.info(f"  - Total sections in document: {len(structure['sections'])}")
     logger.info(f"Created {section_edges_added} parent-child section edges")
     
     # Classify pages if page mapping is available
@@ -1136,20 +1200,20 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
         if (i + 1) % 10 == 0:
             logger.info(f"Processed {i + 1}/{len(chunks)} chunks...")
         
-        # Get heading from metadata, but ensure it matches vector_number if it's a fallback
+        # Get heading from metadata, prefer section information over generic chunk names
         heading = chunk.metadata.get("heading", "")
-        # If heading is empty or is a fallback pattern like "Chunk X", update it to match vector_number
-        if not heading:
-            heading = f"Chunk {vector_number}"
-        elif heading.startswith("Chunk "):
-            # Extract number from "Chunk X" pattern and ensure it matches vector_number
-            try:
-                chunk_num_from_heading = int(heading.replace("Chunk ", "").strip())
-                # If it doesn't match vector_number, update it
-                if chunk_num_from_heading != vector_number:
-                    heading = f"Chunk {vector_number}"
-            except ValueError:
-                # If we can't parse the number, use vector_number
+        section_title = chunk.metadata.get("section_title", "")
+        section_path = chunk.metadata.get("section_path", "")
+        
+        # If heading is empty or is a fallback pattern like "Chunk X", try to use section information
+        if not heading or heading.startswith("Chunk "):
+            # Prefer section_title, then last part of section_path, then generic name
+            if section_title:
+                heading = section_title
+            elif section_path:
+                path_parts = section_path.split(" > ")
+                heading = path_parts[-1] if path_parts else f"Chunk {vector_number}"
+            else:
                 heading = f"Chunk {vector_number}"
         # If heading is a real heading (not "Chunk X" pattern), keep it as is
         

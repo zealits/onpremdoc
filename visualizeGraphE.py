@@ -210,31 +210,56 @@ def visualize_interactive(G: nx.DiGraph, output_file: Path, height: str = "800px
         node_data = G.nodes[node_id]
         node_type = node_data.get("type", "unknown")
         
-        # Set color and size based on type
+        # Default values
+        color = "#BD10E0"  # Purple
+        size = 20
+        title = str(node_id)
+        label = node_id.split(":")[-1]
+        
+        # Sections: use clean section title (NOT full section_path/id)
         if node_type == "section":
             color = "#4A90E2"  # Blue
             size = 30
-            title = f"Section: {node_data.get('section_title', 'Unknown')}"
+            section_title = node_data.get("section_title") or ""
+            section_path = node_data.get("section_path") or ""
+            # Label: prefer explicit section_title, otherwise last part of section_path
+            if section_title:
+                label = section_title
+            elif section_path:
+                label = section_path.split(" > ")[-1]
+            else:
+                label = label  # fallback: id tail
+            title = f"Section: {section_title or label}"
+        
+        # Chunks: show chunk id and heading
         elif node_type == "chunk":
             color = "#7ED321"  # Green
             size = 15
             chunk_id = node_data.get("chunk_id", "?")
-            heading = node_data.get("heading", "No heading")[:50]
-            title = f"Chunk {chunk_id}: {heading}"
+            heading = node_data.get("heading", "No heading")
+            label = f"{chunk_id}"
+            title = f"Chunk {chunk_id}: {heading[:80]}"
+        
+        # Pages: show page number
         elif node_type == "page":
             color = "#F5A623"  # Orange
             size = 25
             page_num = node_data.get("page_number", "?")
+            label = f"Page {page_num}"
             title = f"Page {page_num}"
-        else:
-            color = "#BD10E0"  # Purple
-            size = 20
-            title = str(node_id)
+        
+        # Truncate label to keep visualization readable
+        label = str(label)[:30]
         
         # Add node
-        net.add_node(node_id, label=node_id.split(":")[-1][:20], 
-                    color=color, size=size, title=title, 
-                    group=node_type)
+        net.add_node(
+            node_id,
+            label=label,
+            color=color,
+            size=size,
+            title=title,
+            group=node_type,
+        )
     
     # Add edges with relation labels and styling
     for source, target, edge_data in G.edges(data=True):
