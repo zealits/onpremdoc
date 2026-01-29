@@ -10,7 +10,7 @@ import logging
 import re
 import sys
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Literal, Tuple
+from typing import List, Dict, Any, Optional, Literal
 
 # Graph library
 try:
@@ -361,38 +361,13 @@ def classify_query(state: AgentState) -> AgentState:
                 continue
     
     # Use LLM for more complex classification
-    classification_prompt = f"""Analyze the following user query and determine if it is asking for a page summary or a general question about the document.
+    classification_prompt = f"""Is this query asking for a page summary (specific page number) or a general document question?
 
-User Query: {state["query"]}
+Query: {state["query"]}
 
-A page summary query typically:
-- Mentions a specific page number (e.g., "page 5", "page 10")
-- Asks to summarize, explain, or describe a specific page
-- Asks what is on a specific page
-
-A general query is:
-- Asking about topics, concepts, or information without mentioning a specific page
-- Asking "what", "how", "when", "where" questions about the document content
-- Asking for comparisons, explanations, or details about topics
-
-Respond EXACTLY in this format:
+Reply EXACTLY:
 IS_PAGE_SUMMARY: [YES or NO]
-PAGE_NUMBER: [page number if YES, or "None" if NO]
-
-Examples:
-Query: "What is on page 5?"
-IS_PAGE_SUMMARY: YES
-PAGE_NUMBER: 5
-
-Query: "What are the benefits of this policy?"
-IS_PAGE_SUMMARY: NO
-PAGE_NUMBER: None
-
-Query: "Summarize page 10"
-IS_PAGE_SUMMARY: YES
-PAGE_NUMBER: 10
-
-Now analyze the query:"""
+PAGE_NUMBER: [number if YES, else None]"""
     
     try:
         response = llm.invoke(classification_prompt)
@@ -488,110 +463,6 @@ def distance_to_similarity(distance: float, scale_factor: float = 150.0) -> floa
     similarity = 1.0 / (1.0 + (distance / scale_factor))
     return max(0.0, min(1.0, similarity))
 
-def rerank_chunks_by_relevance(query: str, chunks: List[Document], llm: Ollama, top_k: int = 20) -> Tuple[List[Document], Dict[int, float]]:
-    """Re-rank chunks by relevance to query using LLM"""
-    if not chunks:
-        return [], {}
-    
-    logger.info(f"Re-ranking {len(chunks)} chunks by relevance...")
-    
-    # Prepare chunk summaries for re-ranking
-    chunk_summaries = []
-    chunk_id_map = {}
-    
-    for i, chunk in enumerate(chunks[:30]):  # Limit to 30 for LLM processing
-        chunk_id = chunk.metadata.get("chunk_index")
-        if chunk_id is None:
-            continue
-        
-        heading = chunk.metadata.get("heading", "No heading")
-        section = chunk.metadata.get("section_path", "No section")
-        summary = chunk.metadata.get("summary", "")
-        content_preview = chunk.page_content[:200] + "..." if len(chunk.page_content) > 200 else chunk.page_content
-        
-        chunk_summaries.append(f"""
-Chunk {i+1} (ID: {chunk_id}):
-- Heading: {heading}
-- Section: {section}
-- Summary: {summary}
-- Content preview: {content_preview}
-""")
-        chunk_id_map[i+1] = chunk_id
-    
-    if not chunk_summaries:
-        return chunks, {}
-    
-    context = "\n".join(chunk_summaries)
-    
-    rerank_prompt = f"""You are re-ranking document chunks by their relevance to a user query.
-
-User Query: {query}
-
-Retrieved Chunks:
-{context}
-
-Rate each chunk's relevance to the query on a scale of 0.0 to 1.0, where:
-- 1.0 = Directly answers the query or contains exactly what is asked
-- 0.8-0.9 = Highly relevant, contains important related information
-- 0.6-0.7 = Moderately relevant, contains some related information
-- 0.4-0.5 = Somewhat relevant, tangentially related
-- 0.0-0.3 = Not relevant
-
-Respond EXACTLY in this format (one line per chunk):
-CHUNK 1: [score]
-CHUNK 2: [score]
-...
-
-Example:
-CHUNK 1: 0.95
-CHUNK 2: 0.72
-CHUNK 3: 0.45
-
-Now rate the chunks:"""
-    
-    try:
-        response = llm.invoke(rerank_prompt)
-        response_text = response.strip()
-        
-        rerank_scores = {}
-        for line in response_text.split("\n"):
-            line = line.strip()
-            if line.upper().startswith("CHUNK"):
-                try:
-                    parts = line.split(":", 1)
-                    if len(parts) == 2:
-                        chunk_num = int(parts[0].replace("CHUNK", "").strip())
-                        score = float(parts[1].strip())
-                        # Clamp score to [0, 1]
-                        score = max(0.0, min(1.0, score))
-                        if chunk_num in chunk_id_map:
-                            chunk_id = chunk_id_map[chunk_num]
-                            rerank_scores[chunk_id] = score
-                except (ValueError, IndexError):
-                    continue
-        
-        # Sort chunks by rerank score
-        scored_chunks = []
-        for chunk in chunks:
-            chunk_id = chunk.metadata.get("chunk_index")
-            if chunk_id in rerank_scores:
-                scored_chunks.append((rerank_scores[chunk_id], chunk))
-            else:
-                # If no rerank score, use a default low score
-                scored_chunks.append((0.3, chunk))
-        
-        # Sort by score (descending) and return top_k
-        scored_chunks.sort(reverse=True, key=lambda x: x[0])
-        reranked = [chunk for _, chunk in scored_chunks[:top_k]]
-        
-        logger.info(f"Re-ranking complete. Top {len(reranked)} chunks selected.")
-        return reranked, rerank_scores
-        
-    except Exception as e:
-        logger.error(f"Error in re-ranking: {e}")
-        # Return original chunks if re-ranking fails
-        return chunks[:top_k], {}
-
 def initial_retrieval(state: AgentState) -> AgentState:
     """Initial retrieval: vector search + selective graph expansion"""
     query = state["query"]
@@ -656,16 +527,17 @@ def initial_retrieval(state: AgentState) -> AgentState:
         if chunk_id in chunk_dict:
             retrieved_chunks.append(chunk_dict[chunk_id])
     
-    # Step 4: Re-rank chunks by relevance
-    reranked_chunks, rerank_scores = rerank_chunks_by_relevance(query, retrieved_chunks, _llm, top_k=25)
+    # Cap chunks used (no re-ranking)
+    MAX_INITIAL_CHUNKS = 25
+    chunks_used = retrieved_chunks[:MAX_INITIAL_CHUNKS]
     
     # Update state
     state["seed_chunk_ids"] = seed_chunk_ids
     state["seed_chunk_scores"] = seed_chunk_scores
     state["graph_expanded_ids"] = graph_expanded_ids
-    state["retrieved_chunks"] = reranked_chunks  # Use re-ranked chunks
-    state["reranked_chunks"] = reranked_chunks
-    state["rerank_scores"] = rerank_scores
+    state["retrieved_chunks"] = chunks_used
+    state["reranked_chunks"] = chunks_used
+    state["rerank_scores"] = {}
     state["iteration_count"] = state.get("iteration_count", 0) + 1
     
     # Add debug info
@@ -675,15 +547,15 @@ def initial_retrieval(state: AgentState) -> AgentState:
         "high_quality_seeds": len(high_quality_seeds),
         "seeds_used_for_expansion": len(top_seeds_for_expansion),
         "graph_expanded_chunks": len(graph_expanded_ids),
-        "total_before_rerank": len(retrieved_chunks),
-        "total_after_rerank": len(reranked_chunks),
+        "total_retrieved": len(retrieved_chunks),
+        "total_used": len(chunks_used),
         "similarity_threshold": SIMILARITY_THRESHOLD,
         "top_seeds_for_expansion": top_seeds_for_expansion,
         "seed_scores": {str(k): round(v, 3) for k, v in list(seed_chunk_scores.items())[:10]},
     }
     state["debug_info"] = debug_info
     
-    logger.info(f"Initial retrieval complete: {len(reranked_chunks)} chunks (after re-ranking)")
+    logger.info(f"Initial retrieval complete: {len(chunks_used)} chunks")
     return state
 
 def analyze_chunks(state: AgentState) -> AgentState:
@@ -714,40 +586,17 @@ Chunk {i}:
     context = "\n".join(chunks_text)
     
     # Ask LLM to analyze
-    analysis_prompt = f"""You are analyzing retrieved document chunks to answer a user query.
+    analysis_prompt = f"""Query: {query}
 
-User Query: {query}
-
-Retrieved Chunks (from graph-enhanced search):
+Chunks:
 {context}
 
-Analyze the retrieved chunks and determine:
-1. Do these chunks contain sufficient information to fully answer the query?
-2. What information is missing (if any)?
-3. What related topics or aspects should be searched for to provide a complete answer?
+Do these chunks fully answer the query? If not, give ONE short follow-up search query (5-15 words). Reply EXACTLY:
 
-CRITICAL INSTRUCTIONS:
-- Respond EXACTLY in the format below
-- For RELATED_QUERY: Provide ONLY a single, concise search query (5-15 words)
-- Do NOT include quotes around the query
-- Do NOT include explanations like "A related query could be" or "The query is"
-- Do NOT provide multiple queries separated by "or"
-- Just write the query itself as a simple question or phrase
-- If no additional search is needed, write "None"
-
-Format:
-ANALYSIS: [Your analysis]
-MISSING: [Missing information or "None"]
+ANALYSIS: [brief]
+MISSING: [what is missing or None]
 NEEDS_MORE: [YES or NO]
-RELATED_QUERY: [Single query only, or "None"]
-
-Example of CORRECT format:
-ANALYSIS: The chunks explain compliance obligations but lack details on implementation.
-MISSING: Information on how to implement compliance monitoring systems.
-NEEDS_MORE: YES
-RELATED_QUERY: How to implement compliance monitoring systems
-
-Now respond in the correct format:"""
+RELATED_QUERY: [one query or None]"""
     
     try:
         response = llm.invoke(analysis_prompt)
@@ -876,18 +725,14 @@ def second_retrieval(state: AgentState) -> AgentState:
     all_second_ids = list(set(second_seed_ids + new_expanded))
     logger.info(f"Graph expansion: {len(new_expanded)} additional chunks (total new: {len(all_second_ids)})")
     
-    # Get Document objects
+    # Get Document objects (no re-ranking)
     second_chunks = []
     chunk_dict = {chunk.metadata.get("chunk_index"): chunk for chunk in _chunks}
     for chunk_id in all_second_ids:
         if chunk_id in chunk_dict:
             second_chunks.append(chunk_dict[chunk_id])
-    
-    # Re-rank second retrieval chunks
-    if second_chunks:
-        reranked_second, rerank_scores_second = rerank_chunks_by_relevance(new_query, second_chunks, _llm, top_k=15)
-        second_chunks = reranked_second
-    
+    second_chunks = second_chunks[:15]  # Cap at 15
+
     state["second_seed_ids"] = second_seed_ids
     state["second_seed_scores"] = second_seed_scores
     state["second_expanded_ids"] = new_expanded
@@ -910,27 +755,35 @@ def second_retrieval(state: AgentState) -> AgentState:
 
 def generate_final_answer(state: AgentState) -> AgentState:
     """Generate final answer from all retrieved chunks (re-ranked and filtered)"""
-    query = state["query"]
-    
+    # Always use the user's original question; fallback to refined query if missing (e.g. state merge issue)
+    query = (state.get("query") or "").strip() or (state.get("new_query") or "").strip()
+    if not query:
+        logger.warning("No question in state (query and new_query both empty); cannot generate answer.")
+        state["final_answer"] = "Error: No question was provided. Please ask a question about the document."
+        return state
+
+    logger.info(f"Generating answer for question: '{query[:80]}{'...' if len(query) > 80 else ''}'")
+
     # Use re-ranked chunks if available, otherwise use retrieved chunks
     primary_chunks = state.get("reranked_chunks") or state.get("retrieved_chunks", [])
     second_chunks = state.get("second_retrieval_chunks", [])
     
-    # Combine chunks, prioritizing primary (re-ranked) chunks
-    all_chunks = primary_chunks.copy()
-    # Add second retrieval chunks that aren't already in primary
+    # Combine chunks: when second retrieval was used (refined query), put those chunks first
+    # so the answer is based on the most relevant retrieval (e.g. "jurisdiction" refined query).
     primary_chunk_ids = {chunk.metadata.get("chunk_index") for chunk in primary_chunks}
-    for chunk in second_chunks:
-        chunk_id = chunk.metadata.get("chunk_index")
-        if chunk_id not in primary_chunk_ids:
-            all_chunks.append(chunk)
+    second_only = [c for c in second_chunks if c.metadata.get("chunk_index") not in primary_chunk_ids]
+    if second_only:
+        # Refined-query chunks first, then primary, so LLM prioritizes jurisdiction (etc.) content
+        all_chunks = second_only + primary_chunks
+        max_chunks = 35
+    else:
+        all_chunks = primary_chunks.copy()
+        max_chunks = 25
+    chunks_to_use = all_chunks[:max_chunks]
     
     llm = _llm
     
     logger.info(f"Generating final answer from {len(all_chunks)} chunks (primary: {len(primary_chunks)}, second: {len(second_chunks)})...")
-    
-    # Use more chunks for better context (increased from 18 to 25)
-    chunks_to_use = all_chunks[:25]
     
     # Prepare comprehensive context
     chunks_text = []
@@ -958,26 +811,18 @@ Content: {content}{relevance_note}
     
     context = "\n".join(chunks_text)
     
-    # Generate answer - CRITICAL: Only use information from retrieved chunks
-    answer_prompt = f"""You are a helpful assistant answering questions based ONLY on the retrieved document chunks provided below.
+    # Put the question first and repeat before answer so the model always sees it
+    answer_prompt = f"""QUESTION (answer this using only the document chunks below):
+{query}
 
-User Query: {query}
-
-Retrieved Document Chunks (these are the ONLY sources of information you should use):
+---
+Document chunks (use only this information):
 {context}
+---
 
-CRITICAL INSTRUCTIONS:
-1. You MUST base your answer ONLY on the information provided in the retrieved chunks above
-2. Do NOT use any external knowledge or information not present in the chunks
-3. If the chunks do not contain sufficient information to fully answer the query, state what information is available and what is missing
-4. Use information directly from the chunks - cite specific sections or headings when relevant (e.g., "According to the policy document" or "As stated in the section on...")
-5. Be concise but thorough
-6. IMPORTANT: Do NOT reference chunk numbers (e.g., "Chunk 12", "[Chunk 1]", etc.) in your answer
-7. IMPORTANT: Write your answer in clean, natural language without any technical references to chunks
-8. Format your answer using proper markdown (use **bold** for emphasis, *italics* for emphasis, bullet points with - or *, etc.)
-9. If you cannot answer based on the provided chunks, say "Based on the retrieved document sections, I cannot find sufficient information to answer this question."
+Again, the question to answer is: {query}
 
-Answer (based ONLY on the retrieved chunks above):"""
+Answer (use only the chunks above; no chunk numbers; markdown ok):"""
     
     try:
         response = llm.invoke(answer_prompt)

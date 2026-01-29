@@ -141,6 +141,44 @@ body {
   color: #0f5132;
 }
 
+/* Confidence / data tables */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.data-table th,
+.data-table td {
+  padding: 10px 12px;
+  border: 1px solid #e0e0e0;
+  text-align: left;
+}
+
+.data-table th {
+  background-color: #f8f9fa;
+  font-weight: 600;
+  color: #333;
+}
+
+.data-table tbody tr:nth-child(even) {
+  background-color: #fafafa;
+}
+
+.data-table tbody tr:hover {
+  background-color: #f0f4ff;
+}
+
+.confidence-table .score-cell {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  min-width: 4.5em;
+}
+
+.confidence-table td:first-child {
+  font-weight: 500;
+}
+
 /* Form Elements */
 .form-group {
   margin-bottom: 20px;
@@ -202,8 +240,13 @@ body {
 }
 
 @keyframes spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
+  0% {
+    transform: rotate(0deg);
+  }
+
+  100% {
+    transform: rotate(360deg);
+  }
 }
 
 /* Error Messages */
@@ -296,11 +339,11 @@ body {
 }
 
 /* Ensure first and last elements in markdown have proper spacing */
-.message-assistant .message-content > *:first-child {
+.message-assistant .message-content>*:first-child {
   margin-top: 0 !important;
 }
 
-.message-assistant .message-content > *:last-child {
+.message-assistant .message-content>*:last-child {
   margin-bottom: 0 !important;
 }
 

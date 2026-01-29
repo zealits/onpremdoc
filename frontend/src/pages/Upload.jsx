@@ -154,52 +154,53 @@ function Upload() {
     return ''
   }
 
+  const formatScore = (value) => {
+    if (value == null || value === '') return '—'
+    if (typeof value === 'number') {
+      if (Number.isInteger(value)) return String(value)
+      return value.toFixed(2)
+    }
+    return String(value)
+  }
+
   const renderConfidenceTable = () => {
     if (!confidence || !confidence.has_confidence) return null
 
-    const pageEntries = Object.entries(confidence.pages || {})
+    const pageEntries = Object.entries(confidence.pages || {}).sort(
+      (a, b) => Number(a[0]) - Number(b[0])
+    )
 
     return (
       <div className="card" style={{ marginTop: '20px' }}>
         <h3 style={{ marginBottom: '10px' }}>Docling Conversion Accuracy</h3>
         <p style={{ fontSize: '13px', color: '#666', marginBottom: '12px' }}>
-          Higher scores (closer to 1.0) indicate better layout/OCR/parse quality.
+          Higher scores (closer to 1.0) indicate better layout/OCR quality. Empty values show as —.
         </p>
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Scope</th>
-              <th>Layout score</th>
-              <th>OCR score</th>
-              <th>Parse score</th>
-              <th>Table score</th>
-              <th>Grades</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td><strong>Document</strong></td>
-              <td>{confidence.layout_score ?? '–'}</td>
-              <td>{confidence.ocr_score ?? '–'}</td>
-              <td>{confidence.parse_score ?? '–'}</td>
-              <td>{confidence.table_score ?? '–'}</td>
-              <td>
-                {confidence.mean_grade || '–'}
-                {confidence.low_grade ? ` (low: ${confidence.low_grade})` : ''}
-              </td>
-            </tr>
-            {pageEntries.map(([pageNo, scores]) => (
-              <tr key={pageNo}>
-                <td>Page {pageNo}</td>
-                <td>{scores.layout_score ?? '–'}</td>
-                <td>{scores.ocr_score ?? '–'}</td>
-                <td>{scores.parse_score ?? '–'}</td>
-                <td>{scores.table_score ?? '–'}</td>
-                <td>–</td>
+        <div style={{ overflowX: 'auto' }}>
+          <table className="data-table confidence-table">
+            <thead>
+              <tr>
+                <th>Scope</th>
+                <th className="score-cell">Layout score</th>
+                <th className="score-cell">OCR score</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Document</strong></td>
+                <td className="score-cell">{formatScore(confidence.layout_score)}</td>
+                <td className="score-cell">{formatScore(confidence.ocr_score)}</td>
+              </tr>
+              {pageEntries.map(([pageNo, scores]) => (
+                <tr key={pageNo}>
+                  <td>Page {Number(pageNo) + 1}</td>
+                  <td className="score-cell">{formatScore(scores.layout_score)}</td>
+                  <td className="score-cell">{formatScore(scores.ocr_score)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     )
   }
