@@ -1,0 +1,60 @@
+@startuml
+title PDF Upload & Background Processing (Steps 1–6)
+
+actor User
+participant "Frontend\n(UI / client)" as FE
+participant "FastAPI\n(main.py)" as API
+participant "BackgroundTasks\n(FastAPI)" as BG
+participant "PDF Processor\n(detection.py)" as DET
+database "Document Folder\noutput/{document_id}" as DOC
+
+' 1. Upload PDF
+User -> FE: Select PDF and click Upload
+FE -> API: POST /upload (file: PDF)
+activate API
+API -> DOC: Save PDF as\noutput/{document_id}/file.pdf
+API -> BG: add_task(process_pdf_background,\n pdf_path, document_id)
+deactivate API
+API --> FE: 202 Accepted\n{ document_id, status: processing }
+
+' 2. Background task entry
+BG -> API: call process_pdf_background(pdf_path, document_id)
+activate API
+API -> DET: process_single_pdf(pdf_path,\n base_output_dir=output,\n target_dir=doc_path)
+deactivate API
+
+activate DET
+
+' 3. PDF → Docling document
+DET -> DET: converter = DocumentConverter(...)
+DET -> DET: doc = converter.convert(pdf_path,\n pipeline_options)
+
+' 4. Correct heading hierarchy
+DET -> DET: ResultPostprocessor(doc, source=pdf_path).process()\n// adjust heading levels using TOC/bookmarks
+
+' 5. Export markdown with page breaks
+DET -> DET: markdown = doc.document.export_to_markdown(\n page_break_placeholder="<!-- page break -->")\n<<or fallback reconstruction>>
+
+' 6. Fix markdown tables
+DET -> DET: fixed_markdown = process_markdown(\n markdown, preserve_page_breaks=True)
+
+' 7. Extract page mapping
+DET -> DET: page_mapping = extract_page_mapping_from_markdown(\n fixed_markdown)\nif missing markers:\n  page_mapping = create_approximate_page_mapping(lines)
+
+' 8. Persist markdown + mapping
+DET -> DOC: write file.md (fixed_markdown)
+DET -> DOC: write _page_mapping.json (page_mapping)
+
+DET -> DET: log \"DONE\", total_pages
+deactivate DET
+
+note right of DOC
+After this pipeline, each document_id
+has:
+- original PDF
+- fixed markdown (.md)
+- page mapping JSON (_page_mapping.json)
+end note
+
+@enduml
+

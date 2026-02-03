@@ -822,7 +822,7 @@ Document chunks (use only this information):
 
 Again, the question to answer is: {query}
 
-Answer (use only the chunks above; no chunk numbers; markdown ok):"""
+Answer (use only the chunks above; no chunk numbers; markdown ok; answer in detail and descriptive way):"""
     
     try:
         response = llm.invoke(answer_prompt)

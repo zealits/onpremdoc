@@ -1,0 +1,97 @@
+@startuml
+title Query & Retrieval Agent (Steps 20–29)
+
+actor User
+participant "Frontend" as FE
+participant "FastAPI\n(main.py)" as API
+participant "Retrieval Agent\n(retrivalAgentE.py)" as AG
+database "Chroma\n(vector DB)" as CH
+participant "DocumentGraph" as DG
+participant "Chunks\n(vector_mapping JSON)" as CM
+participant "Ollama LLM" as LLM
+
+' 20. Submit query
+User -> FE: Type question\n"policy shall be governed by the laws of which country"
+FE -> API: POST /query\n{ document_id, query }
+activate API
+API -> API: validate query, document_id
+
+' 21. Load agent resources
+API -> CH: load_vector_store(document_id)
+API -> DG: DocumentGraph.load(graph.json)
+API -> CM: load_chunks_from_mapping(\nvector_mapping.json)
+API -> LLM: init Ollama LLM
+API -> AG: create_retrieval_agent(\nvector_store=CH,\ndocument_graph=DG,\nchunks=CM,\nllm=LLM,\ndocument_folder=doc_path)
+
+' Build initial AgentState
+API -> AG: agent.invoke({\nquery,\nis_page_summary=False,\npage_number=None,\nseed_chunk_ids=[],\ngraph_expanded_ids=[],\nretrieved_chunks=[],\nsecond_retrieval_chunks=[],\nfinal_answer=""\n})
+
+== LangGraph execution inside Retrieval Agent ==
+
+' 22. Classify query
+AG -> AG: classify_query(state)
+AG -> LLM: classification_prompt(query)
+LLM --> AG: IS_PAGE_SUMMARY / PAGE_NUMBER
+AG -> AG: route_query_type()
+
+alt page-summary query
+  AG -> AG: summarize_page(state)\n(see page summarization flow)
+  AG -> API: state.final_answer\n(page summary)
+  API --> FE: 200 OK + JSON\n{ answer, ... }
+  FE --> User: Show page summary
+  deactivate API
+else normal retrieval
+  AG -> AG: initial_retrieval(state)
+end
+
+' 23. Vector similarity search (initial)
+AG -> CH: similarity_search_with_score(\nquery, k=20)
+CH --> AG: [(chunk, distance), ...]
+AG -> AG: similarity_score =\ndistance_to_similarity(distance)
+AG -> AG: seed_chunk_ids,\nseed_chunk_scores
+
+' 24. Graph expansion
+AG -> DG: expand_from_chunks(\ntop_seeds, max_expansion=15)
+DG --> AG: graph_expanded_ids
+AG -> AG: all_chunk_ids =\nseed_chunk_ids UNION graph_expanded_ids
+AG -> AG: retrieved_chunks =\nmap IDs -> Document objects\n(first N = 25)
+
+' 25. Cap retrieved chunks
+AG -> AG: state["retrieved_chunks"] =\nretrieved_chunks[:25]
+
+' 26. Analyze chunks
+AG -> AG: analyze_chunks(state)
+AG -> LLM: analysis_prompt(query,\ntop retrieved chunks)
+' asks: is info sufficient?
+' if not, ask for 1 follow-up query
+LLM --> AG: ANALYSIS,\nNEEDS_MORE,\nRELATED_QUERY
+AG -> AG: needs_more_info,\nnew_query
+
+' 27. Second retrieval (optional)
+alt needs_more_info == True\nand new_query not None
+  AG -> AG: second_retrieval(state)
+  AG -> CH: similarity_search_with_score(\nnew_query, k=15)
+  CH --> AG: second seeds
+  AG -> DG: expand_from_chunks(\nsecond_seeds, max_expansion=12)
+  DG --> AG: second_expanded_ids
+  AG -> AG: filter out chunk_ids\nalready retrieved
+  AG -> AG: second_retrieval_chunks =\nnew Documents (capped <= 15)
+  AG -> AG: state["second_retrieval_chunks"] =\nsecond_retrieval_chunks
+else no second retrieval
+  AG -> AG: skip second_retrieval\n(state['second_retrieval_chunks'] empty)
+end
+
+' 28. Generate final answer
+AG -> AG: generate_final_answer(state)
+AG -> LLM: answer_prompt(\nQUESTION (first line): query,\nchunks: primary + second,\nQUESTION repeated before answer)
+' LLM must answer using only supplied chunks
+LLM --> AG: final_answer text
+AG -> AG: state["final_answer"] = final_answer
+
+' 29. Format response
+AG --> API: final_state\n(answer, chunks, stats,\nnew_query, etc.)
+API -> API: build QueryResponse(\nanswer=final_answer,\nchunks_detail=...,\nretrieval_stats=...,\nsecond_query=new_query (if any))
+API --> FE: 200 OK + JSON
+FE --> User: Show final answer
+
+@enduml

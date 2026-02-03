@@ -1,0 +1,47 @@
+@startuml
+title Document Processing Backend - L1 Overview
+
+actor User
+participant "Frontend" as FE
+participant "API\n(main.py)" as API
+participant "PDF Processing\n(detection.py)" as PDF
+participant "Vectorization\n(vectorizerE.py)" as VEC
+participant "Retrieval Agent\n(retrivalAgentE.py)" as RET
+database "Storage\n(files, Chroma, graph)" as STORE
+
+== 1. Upload & process PDF ==
+User -> FE: Upload PDF
+FE -> API: POST /upload
+API -> STORE: Save PDF
+API -> PDF: process_single_pdf (background)
+PDF -> STORE: Markdown + page mapping
+API --> FE: document_id, status
+
+== 2. Vectorize document ==
+User -> FE: Vectorize
+FE -> API: POST /vectorize/{document_id}
+API -> VEC: vectorize_background (background)
+VEC -> STORE: Load markdown, mapping
+VEC -> VEC: Chunk, embed, build graph
+VEC -> STORE: Graph JSON, vector mapping, Chroma
+API --> FE: status
+
+== 3. Query (retrieval or page summary) ==
+User -> FE: Ask question
+FE -> API: POST /query { document_id, query }
+API -> STORE: Load Chroma, graph, chunks
+API -> RET: agent.invoke(state)
+RET -> RET: Classify query
+alt Normal retrieval
+  RET -> STORE: Vector search + graph expand
+  RET -> RET: Analyze chunks, optional 2nd retrieval
+  RET -> RET: Generate answer (LLM)
+else Page summary
+  RET -> STORE: Get page chunks
+  RET -> RET: Summarize page (LLM)
+end
+RET --> API: final_answer
+API --> FE: Answer + metadata
+FE --> User: Show answer
+
+@enduml

@@ -3,146 +3,164 @@ Fill Document_Processing_Pipeline_Steps.xlsx:
 - Pipeline Steps: Step #, Step Name, Description, Module/File, Models & Technologies,
   Algorithms & Methods, Key Functions, Input, Output, Examples.
 - Summary: Remove re-ranking; no mention of reranking (pipeline does not use it).
-- All descriptions in-depth; simple examples for each step.
+- Combined Steps sheet: same columns, fewer rows; formatted like Pipeline Steps (wrap, colors, spacing).
 """
 import openpyxl
 from pathlib import Path
+from openpyxl.styles import Font, Alignment, PatternFill
 
-# Step#, Step Name, Module/File, Models & Technologies, Algorithms & Methods, Key Functions
+# Step#, Step Name, Module/File, Models & Technologies, Algorithms & Methods, Key Functions (one purpose per step)
 STEPS = [
-    (1, "Upload PDF", "main.py", "FastAPI", "File upload, UUID generation", "upload_pdf(), File(), UploadFile"),
-    (2, "Background PDF processing", "main.py, detection.py", "—", "Background task scheduling", "process_pdf_background(), process_single_pdf()"),
-    (3, "PDF to Markdown conversion", "detection.py", "Docling (DocumentConverter)", "Native text extraction, layout parsing", "DocumentConverter.convert(), export_to_markdown(page_break_placeholder)"),
-    (4, "Hierarchical heading correction", "detection.py", "docling-hierarchical (ResultPostprocessor)", "TOC/bookmark-based heading level inference", "ResultPostprocessor(doc, source=pdf_path).process()"),
-    (5, "Markdown table fixing", "detection.py", "—", "Table detection, separator/header/group row handling", "process_markdown(), fix_table(), trim_trailing_empty_columns()"),
-    (6, "Page mapping extraction", "detection.py", "—", "Line-to-page mapping from page break markers", "extract_page_mapping_from_markdown(), create_approximate_page_mapping()"),
-    (7, "Trigger vectorization", "main.py", "FastAPI, LangGraph", "Background task, state initialization", "vectorize_document(), vectorize_background(), create_vectorization_workflow()"),
-    (8, "Load markdown and chunk", "vectorizerE.py", "—", "Markdown parsing, structure-aware chunking", "load_markdown(), parse_markdown_enhanced(), get_section_for_line()"),
-    (9, "Extract document structure", "vectorizerE.py", "—", "Regex header detection, full hierarchy path building", "extract_document_structure(), header match (#+), section path tree"),
-    (10, "Create enhanced chunks", "vectorizerE.py", "—", "Size-based splitting, overlap, section assignment", "create_enhanced_chunk(), is_chunk_empty(), adjacency metadata"),
+    (1, "Upload PDF", "main.py", "FastAPI", "File save, UUID generation", "upload_pdf(), File(), UploadFile"),
+    (2, "Schedule PDF processing task", "main.py, detection.py", "—", "Enqueue background task that runs steps 3–6", "process_pdf_background(), process_single_pdf()"),
+    (3, "Convert PDF to markdown", "detection.py", "Docling (DocumentConverter)", "PDF parse, export with page-break placeholder", "DocumentConverter.convert(), export_to_markdown(page_break_placeholder)"),
+    (4, "Correct heading hierarchy", "detection.py", "docling-hierarchical (ResultPostprocessor)", "TOC/bookmark level inference", "ResultPostprocessor(doc, source=pdf_path).process()"),
+    (5, "Fix markdown tables", "detection.py", "—", "Table detect, separator/header/column fix", "process_markdown(), fix_table(), trim_trailing_empty_columns()"),
+    (6, "Extract page mapping", "detection.py", "—", "Scan page-break markers, assign line→page", "extract_page_mapping_from_markdown(), create_approximate_page_mapping()"),
+    (7, "Schedule vectorization task", "main.py", "FastAPI, LangGraph", "Enqueue workflow that runs steps 8–19", "vectorize_document(), vectorize_background(), create_vectorization_workflow()"),
+    (8, "Load markdown and parse", "vectorizerE.py", "—", "Read file, parse lines/blocks, attach page numbers", "load_markdown(), parse_markdown_enhanced()"),
+    (9, "Extract document structure", "vectorizerE.py", "—", "Regex headers, build section tree with full paths", "extract_document_structure(), header match (#+), section path tree"),
+    (10, "Create enhanced chunks", "vectorizerE.py", "—", "Split by size/overlap, assign section/page/prev/next", "create_enhanced_chunk(), is_chunk_empty(), adjacency metadata"),
     (11, "Initialize LLM and vector store", "vectorizerE.py", "Ollama (llama3.1:8b), nomic-embed-text:v1.5, Chroma", "Embedding model, LLM, persistent vector DB", "Ollama(), OllamaEmbeddings(), Chroma(persist_directory)"),
     (12, "Build section graph", "vectorizerE.py", "NetworkX", "Section nodes, parent-child edges (contains_section)", "add_section_node(), add_edge(relation='contains_section')"),
-    (13, "Page classification", "vectorizerE.py", "Ollama LLM", "Per-page content classification (1–4 word labels)", "classify_pages(), classify_page_with_llm()"),
-    (14, "Process chunks (embed + graph)", "vectorizerE.py", "Ollama, Chroma, NetworkX", "Per-chunk: summary, embed, add to store and graph", "process_chunks_one_by_one() loop, add_chunk_node(), add_edge()"),
-    (15, "Chunk summary generation", "vectorizerE.py", "Ollama LLM", "One-line summary, token limit 500", "get_summary_from_llm(), token_tracker.check_llm_limit()"),
-    (16, "Chunk embedding", "vectorizerE.py", "Ollama (nomic-embed-text:v1.5), Chroma", "Token/char limit check, vector storage", "token_tracker.check_embedding_limit(), vector_store.add_documents()"),
-    (17, "Chunk graph edges", "vectorizerE.py", "NetworkX", "belongs_to section, on_page, follows prev/next", "add_chunk_node(), add_edge(contains, belongs_to, on_page, follows)"),
-    (18, "Similarity edges", "vectorizerE.py", "Chroma, NetworkX", "L2 distance → similarity, threshold 0.50, similar_to edges", "similarity_search_with_score(), add_edge(relation='similar_to')"),
-    (19, "Persist outputs", "vectorizerE.py", "Chroma, JSON", "Graph JSON, vector mapping JSON, Chroma persist", "document_graph.save(), json.dump(), Chroma persist_directory"),
-    (20, "Submit query", "main.py", "FastAPI", "Request validation, agent loading", "query_document(), load_agent_for_document()"),
-    (21, "Load agent resources", "main.py, retrivalAgentE.py", "Chroma, NetworkX, Ollama", "Vector store, graph, chunks, LLM, page agent", "load_chunks_from_mapping(), load_vector_store(), DocumentGraph.load(), load_page_agent()"),
-    (22, "Query classification", "retrivalAgentE.py", "Ollama LLM, regex", "Page-summary vs normal retrieval", "classify_query(), route_query_type()"),
-    (23, "Vector similarity search", "retrivalAgentE.py", "Chroma, nomic-embed-text", "L2 distance, k=20, distance_to_similarity()", "similarity_search_with_score(query, k=20)"),
-    (24, "Graph expansion", "retrivalAgentE.py", "NetworkX", "BFS from top-5 seeds: sections, adjacent, similar; max 15", "expand_from_chunks(), get_parent_section(), get_adjacent_chunks(), get_similar_chunks()"),
-    (25, "Cap initial chunks", "retrivalAgentE.py", "—", "Select top 25 chunks from combined vector + graph results", "retrieved_chunks[:25], state['retrieved_chunks']"),
-    (26, "Chunk analysis", "retrivalAgentE.py", "Ollama LLM", "Shortened prompt; need more info?, single follow-up query", "analyze_chunks(), should_continue_search()"),
-    (27, "Second retrieval", "retrivalAgentE.py", "Chroma, NetworkX", "New query vector search, graph expand; cap 15 chunks", "second_retrieval(), similarity_search_with_score(new_query, k=15)"),
-    (28, "Generate answer", "retrivalAgentE.py", "Ollama LLM", "Question in prompt (first line + repeated); primary + second chunks", "generate_final_answer(), answer_prompt with QUESTION block"),
-    (29, "Format response", "main.py", "FastAPI, Pydantic", "ChunkDetail, retrieval_stats, debug_info", "QueryResponse(), ChunkDetail(), retrieval_stats"),
-    (30, "Page summarization", "main.py, page_summarization.py", "Ollama LLM, DocumentGraph", "Page chunks or adjacent, LLM summary + key points", "load_page_agent(), summarize_page(), _generate_summary_with_llm()"),
+    (13, "Page classification", "vectorizerE.py", "Ollama LLM", "One label per page (1–4 words)", "classify_pages(), classify_page_with_llm()"),
+    (14, "Process each chunk (steps 15–18)", "vectorizerE.py", "Ollama, Chroma, NetworkX", "Loop chunks; run 15 (summary), 16 (embed), 17 (edges), 18 (similar_to)", "process_chunks_one_by_one()"),
+    (15, "Generate chunk summary", "vectorizerE.py", "Ollama LLM", "One-line summary, token limit", "get_summary_from_llm(), token_tracker.check_llm_limit()"),
+    (16, "Embed chunk and add to Chroma", "vectorizerE.py", "Ollama (nomic-embed-text), Chroma", "Truncate if over limit; embed; add_documents()", "token_tracker.check_embedding_limit(), vector_store.add_documents()"),
+    (17, "Add chunk node and section/page edges", "vectorizerE.py", "NetworkX", "One node per chunk; edges: belongs_to, on_page, follows", "add_chunk_node(), add_edge(belongs_to, on_page, follows)"),
+    (18, "Add similar_to edges", "vectorizerE.py", "Chroma, NetworkX", "Vector search from chunk; threshold; add similar_to edges", "similarity_search_with_score(), add_edge(relation='similar_to')"),
+    (19, "Persist graph, mapping, Chroma", "vectorizerE.py", "Chroma, JSON", "Write graph JSON, mapping JSON, Chroma to disk", "document_graph.save(), json.dump(), persist_directory"),
+    (20, "Submit query and invoke agent", "main.py", "FastAPI", "Validate request, load agent, invoke graph", "query_document(), load_agent_for_document(), agent.invoke()"),
+    (21, "Load agent resources", "main.py, retrivalAgentE.py", "Chroma, NetworkX, Ollama", "Load vector store, graph, chunks, LLM, page agent", "load_chunks_from_mapping(), load_vector_store(), DocumentGraph.load(), load_page_agent()"),
+    (22, "Classify query type", "retrivalAgentE.py", "Ollama LLM, regex", "Page-summary vs normal retrieval; route", "classify_query(), route_query_type()"),
+    (23, "Vector similarity search", "retrivalAgentE.py", "Chroma, nomic-embed-text", "Embed query; top-k by L2; distance→similarity", "similarity_search_with_score(query, k=20)"),
+    (24, "Graph expansion", "retrivalAgentE.py", "NetworkX", "From top seeds: sections, adjacent, similar_to; cap", "expand_from_chunks(), get_parent_section(), get_adjacent_chunks(), get_similar_chunks()"),
+    (25, "Cap and set retrieved chunks", "retrivalAgentE.py", "—", "Take first N chunks (e.g. 25); store in state", "retrieved_chunks[:25], state['retrieved_chunks']"),
+    (26, "Analyze chunks; decide if more info needed", "retrivalAgentE.py", "Ollama LLM", "LLM: suffice? one follow-up query if not", "analyze_chunks(), should_continue_search()"),
+    (27, "Second retrieval (if needed)", "retrivalAgentE.py", "Chroma, NetworkX", "Vector search + expand with new_query; cap; append", "second_retrieval(), similarity_search_with_score(new_query, k=15)"),
+    (28, "Generate final answer", "retrivalAgentE.py", "Ollama LLM", "Prompt: question + chunks; LLM answer from chunks only", "generate_final_answer(), answer_prompt with QUESTION"),
+    (29, "Format API response", "main.py", "FastAPI, Pydantic", "Map state to QueryResponse schema", "QueryResponse(), ChunkDetail(), retrieval_stats"),
+    (30, "Page summarization", "main.py, page_summarization.py", "Ollama LLM, DocumentGraph", "Load page chunks; LLM summary and key points", "load_page_agent(), summarize_page(), _generate_summary_with_llm()"),
 ]
 
-# In-depth descriptions (no mention of re-ranking). Column C.
+# One purpose per step; no inheritance or forward/backward references. Column C.
 DESCRIPTIONS = {
-    1: "User uploads a PDF file via the FastAPI endpoint. The file is saved under a document-specific folder with a unique UUID. The API returns the document_id and status so the client can poll or use the document for later steps (e.g. vectorization, query).",
-    2: "A background task is started so the API can respond immediately. The task runs PDF processing: it converts the PDF to markdown, fixes tables, and extracts a line-to-page mapping. Results are written to the document folder (e.g. .md file and _page_mapping.json).",
-    3: "Docling converts the PDF into structured markdown. It extracts text and layout and inserts page-break placeholders. This preserves document structure (headings, lists, tables) and gives a consistent format for downstream chunking and graph building.",
-    4: "Heading levels from the PDF TOC or bookmarks are used to correct markdown heading hierarchy. This step ensures sections like 'Part A', 'Section 1.2' have the right nesting so the vectorizer can build an accurate section graph.",
-    5: "Markdown tables are detected and normalized: separator rows, header rows, and grouping are fixed. Trailing empty columns are trimmed. Output is clean markdown suitable for chunking without broken table boundaries.",
-    6: "Page-break markers in the markdown are used to build a line-to-page map. Each line (or block) is assigned a page number. This supports page-level features (e.g. page summaries, page classification) and citation by page.",
-    7: "The API triggers the vectorization workflow for a document (e.g. after upload or on demand). A LangGraph workflow is created and run in the background. Initial state includes the document_id and paths to the markdown and page mapping.",
-    8: "The markdown file and page mapping are loaded. Markdown is parsed with structure awareness (headings, lists, tables). Each segment is associated with a section and page via the structure and page mapping.",
-    9: "The full document structure is extracted from the markdown: sections and headers are detected with regex, and a full hierarchy path is built for each (e.g. 'Part A > Section 2 > 2.1'). This drives section nodes and chunk–section links in the graph.",
-    10: "Content is split into fixed-size chunks (e.g. 2000 chars, 150 overlap). Empty or duplicate chunks are dropped. Each chunk gets metadata: heading, section_path, page_number, prev/next chunk IDs. Chunks are assigned to the most specific section containing their start line.",
-    11: "Ollama LLM and embedding model are initialized (e.g. llama3.1:8b, nomic-embed-text:v1.5). Chroma is set up with a persist directory. These are used for chunk summarization, embedding, and later for the retrieval agent.",
-    12: "A directed graph is built from the document structure: one node per section, with edges from parent to child (e.g. 'Part A' → 'Section 2'). This supports graph expansion at query time (e.g. follow section links from a seed chunk).",
-    13: "Each page is classified by the LLM into a short label (1–4 words) based on its content. Labels are stored in chunk metadata and used for display or filtering (e.g. 'Terms and conditions', 'Claim form').",
-    14: "For each chunk, the pipeline generates a one-line summary (LLM), computes an embedding (nomic-embed-text), adds the chunk to Chroma, and adds a chunk node and edges to the graph (section, page, prev/next, and later similarity).",
-    15: "The LLM produces a single concise summary line per chunk, within a token limit (e.g. 500). Summaries are stored in chunk metadata and used in retrieval (e.g. in analysis or answer prompts) and in the vector mapping JSON.",
-    16: "Chunk text is checked against token/character limits for the embedding model; if over, it is truncated. The embedding is computed and the chunk (with metadata) is added to the Chroma collection.",
-    17: "Each chunk is added as a node in the graph. Edges link chunk to its section (belongs_to), to its page (on_page), and to previous/next chunks (follows). These support graph expansion (e.g. 'give me adjacent chunks').",
-    18: "For each chunk, a vector search finds other chunks with L2 distance below a threshold (e.g. 0.50). Pairs are connected with a 'similar_to' edge. This adds semantic neighbourhoods to the graph for expansion.",
-    19: "The document graph is saved as JSON (nodes and edges). The vector mapping (chunks with metadata and optional summaries) is saved as JSON. The Chroma collection is persisted to disk so the retrieval agent can load it.",
-    20: "The user sends a query (and optional document_id, flags) via the API. The request is validated and the agent for that document is loaded (vector store, graph, chunks, LLM). The query is passed into the agent state.",
-    21: "For the given document, the vector store (Chroma), document graph (NetworkX), chunk list (from vector mapping JSON), and LLM are loaded. If configured, the page summarization agent is also loaded. These are stored for use by the retrieval nodes.",
-    22: "The user query is classified as either a page-summary request (e.g. 'summarize page 5') or a normal retrieval request. Pattern matching and optionally the LLM are used. The result routes to either page summarization or the retrieval pipeline.",
-    23: "The query is embedded and compared to chunk embeddings in Chroma. The top-k (e.g. 20) chunks by L2 distance are taken as seeds. Distances are converted to similarity scores and stored for logging or display.",
-    24: "From the top seed chunks (e.g. top 5), the graph is traversed: parent sections, adjacent chunks (prev/next), and similar chunks (similar_to). Expansion is capped (e.g. 15 extra chunks) to keep context size manageable.",
-    25: "The combined set of seed and expanded chunks is trimmed to a fixed limit (e.g. 25) for the first pass. Order is preserved (e.g. seeds first). These chunks are stored in state and passed to chunk analysis. No LLM scoring step is used.",
-    26: "The LLM analyzes the current chunks with a short prompt: do they sufficiently answer the query? If not, it produces a single follow-up query. The result (needs_more_info, new_query) drives whether a second retrieval is run.",
-    27: "When the analysis requests more information, a second retrieval is run with the new query: vector search (e.g. k=15) and graph expansion from those seeds, excluding chunks already in the first pass. Results are capped (e.g. 15) and appended to state.",
-    28: "The final answer is generated by the LLM from the selected chunks (primary plus any second retrieval). The user question is placed at the top of the prompt and repeated before the answer instruction. Only information from the chunks is used; chunk numbers are not cited in the answer.",
-    29: "The agent output (final answer, chunk list, retrieval stats, debug info) is mapped into a structured API response: answer text, optional chunk details (with metadata), retrieval statistics, and optional second query used.",
-    30: "For page-summary queries, the page summarization agent loads chunks for the requested page (and optionally adjacent pages). The LLM produces a short summary, key points, and section labels. The result is returned as the final answer.",
+    1: "Receive the PDF file from the client and save it to a document folder named by a new UUID. Return the document_id and status so the client can poll or call vectorize/query.",
+    2: "Enqueue a background task for this document. When the task runs, it executes steps 3, 4, 5, and 6 in order and writes the markdown and page-mapping files to the document folder. The API returns immediately.",
+    3: "Convert the PDF to structured markdown using Docling. Insert page-break placeholders in the output. Output is raw markdown (headings, lists, tables, page-break markers).",
+    4: "Adjust heading levels in the document using the PDF TOC or bookmarks so that section nesting is correct (e.g. Part A as top level, Section 1.2 as child). Output is the same document with corrected heading levels.",
+    5: "Detect tables in the markdown and fix separator rows, header rows, and trailing empty columns. Output is markdown with valid table syntax.",
+    6: "Scan the markdown for page-break markers and assign a page number to each line or block. Output is a JSON map (line_to_page, page_boundaries, total_pages).",
+    7: "Enqueue a background vectorization workflow for the document. Create the workflow state (markdown path, document folder) and run the workflow. The API returns immediately.",
+    8: "Read the markdown file and page-mapping JSON from disk. Parse the markdown into lines or blocks and attach a page number to each using the page mapping. Output is parsed content with page numbers.",
+    9: "Scan the markdown for headers (#, ##, etc.) and build a tree of sections. Assign each section a full path (e.g. 'Part A > Section 2 > 2.1'). Output is a structure dict (sections with full paths).",
+    10: "Split the markdown into fixed-size chunks (e.g. 2000 chars, 150 overlap). For each chunk, set metadata: section_path from structure, page_number from page mapping, heading, prev/next chunk IDs. Drop empty or duplicate chunks. Output is a list of Document objects with metadata.",
+    11: "Create the Ollama LLM and embedding client and a Chroma vector store with a persist directory. Output is initialized LLM, embeddings, and vector_store used in steps 15–16 and by the retrieval agent.",
+    12: "Create one graph node per section from the structure tree. Add a directed edge from each parent section to its child. Output is a graph with section nodes and contains_section edges.",
+    13: "For each page, call the LLM to assign a short label (1–4 words) from the page content. Output is a dict mapping page_number to classification label.",
+    14: "For each chunk in order: run step 15 (summary), step 16 (embed and add to Chroma), step 17 (add chunk node and section/page/prev/next edges), step 18 (add similar_to edges). Output is updated vector store, graph, and JSON mapping entries.",
+    15: "Call the LLM with the chunk text to produce one concise summary line (token-limited). Attach the summary to the chunk metadata. Output is the chunk with metadata.summary set.",
+    16: "Truncate the chunk text if it exceeds embedding limits. Compute the embedding and add the chunk (with metadata) to the Chroma collection. Output is the chunk stored in Chroma.",
+    17: "Add one graph node for the chunk. Add edges: chunk→section (belongs_to), chunk→page (on_page), chunk→prev (follows), chunk→next (follows). Output is the updated graph.",
+    18: "Run a vector search from this chunk’s embedding; find other chunks within the similarity threshold. Add a similar_to edge from this chunk to each. Output is the updated graph.",
+    19: "Write the graph to a JSON file. Write the vector mapping (chunk list with metadata) to a JSON file. Persist the Chroma collection to disk. Output is the three artifacts on disk.",
+    20: "Validate the request (query, document_id). Load the agent resources for that document. Put the query into the agent state and invoke the agent graph. Output is the initial state and graph invocation.",
+    21: "Load the Chroma vector store from the document’s vector_db path. Load the document graph from the graph JSON. Load the chunk list from the vector mapping JSON. Load the LLM and, if configured, the page summarization agent. Output is these objects in memory for the retrieval nodes.",
+    22: "Decide whether the query asks for a page summary (e.g. 'summarize page 5') or a normal retrieval. Use pattern matching and optionally the LLM. Output is is_page_summary and, if true, page_number. This routes to either step 30 or step 23.",
+    23: "Embed the query and run a vector search in Chroma (top-k by L2 distance). Convert distances to similarity scores. Output is the list of seed chunk IDs and their similarity scores.",
+    24: "Starting from the top seed chunks (e.g. top 5), traverse the graph: add parent sections, adjacent chunks (prev/next), and similar_to neighbours. Stop after a fixed number of extra chunks (e.g. 15). Output is the expanded set of chunk IDs.",
+    25: "Take the union of seed and expanded chunk IDs and keep only the first N (e.g. 25) chunks as Document objects. Store them in state. Output is state['retrieved_chunks'].",
+    26: "Call the LLM with the query and a subset of the retrieved chunks. Ask whether the chunks suffice to answer the query and, if not, for one follow-up query. Output is needs_more_info and, if true, new_query.",
+    27: "If needs_more_info and new_query exist: embed new_query, run vector search (top-k), expand via graph, exclude already-retrieved chunks, cap the new set (e.g. 15). Append to state. Output is state['second_retrieval_chunks'].",
+    28: "Build a prompt that states the user question at the top and again before the answer instruction. Fill the middle with the selected chunks (primary and, if any, second). Call the LLM. Return only the answer text; do not cite chunk numbers. Output is state['final_answer'].",
+    29: "Map the agent state (final_answer, chunks, retrieval stats) into the API response schema: answer, optional chunk details, retrieval_stats, second_query if used. Return the JSON response.",
+    30: "Load chunks for the requested page (and optionally adjacent pages) from the graph/mapping. Call the LLM to produce a short summary, key points, and section labels. Return this as the final answer.",
 }
 
-# Input (column H) and Output (column I)
+# Input (column H) and Output (column I) — only what this step consumes/produces
 INPUT_OUTPUT = {
     1: ("PDF file (UploadFile)", "Saved PDF path, document_id, ProcessPDFResponse"),
-    2: ("PDF file path", "Markdown file (.md), Page mapping JSON (_page_mapping.json)"),
-    3: ("PDF file", "Raw markdown with page break markers (<!-- page break -->)"),
+    2: ("document_id, PDF path", "Enqueued task (steps 3–6 run when task executes)"),
+    3: ("PDF file", "Raw markdown with page break markers"),
     4: ("Docling document object", "Document with corrected heading hierarchy"),
-    5: ("Markdown text with tables", "Fixed markdown with properly formatted tables"),
-    6: ("Markdown with page break markers", "Page mapping JSON: {line_to_page, page_boundaries, total_pages}"),
-    7: ("document_id", "VectorizerState with markdown_file path"),
-    8: ("Markdown file path, page mapping JSON", "Parsed chunks, document structure dict"),
-    9: ("Markdown content", "Structure dict: {sections, headers, tables} with full paths"),
-    10: ("Markdown content, structure, page mapping", "List of Document chunks with metadata (heading, section_path, page_number, etc.)"),
-    11: ("Model names, base URL", "Initialized LLM, embeddings, vector store, DocumentGraph"),
-    12: ("Document structure (sections)", "Graph with section nodes and hierarchical edges"),
-    13: ("Chunks grouped by page, page mapping", "Dictionary: {page_number: classification_label}"),
-    14: ("Chunk content", "Embedded chunk in Chroma, chunk node and edges in graph, JSON mapping entry"),
-    15: ("Chunk content (max 2000 chars)", "One-line summary string"),
-    16: ("Chunk content (max 2000 chars, 1500 tokens)", "Vector embedding stored in Chroma"),
-    17: ("Chunk metadata (section_path, page_number, prev/next chunk IDs)", "Graph nodes and edges for chunks"),
-    18: ("Chunk embeddings", "Graph edges with similarity scores (similar_to relation)"),
-    19: ("DocumentGraph, JSON mapping, vector store", "Graph JSON file, vector mapping JSON file, persisted Chroma DB"),
-    20: ("Query string, document_id", "Initialized AgentState with query"),
-    21: ("Vector DB path, mapping file, graph file", "Loaded vector store, graph, chunks, LLM, page agent"),
-    22: ("User query", "is_page_summary (bool), page_number (optional)"),
+    5: ("Markdown text", "Fixed markdown (valid tables)"),
+    6: ("Markdown with page breaks", "Page mapping JSON: {line_to_page, page_boundaries, total_pages}"),
+    7: ("document_id", "Enqueued workflow (steps 8–19 run when workflow runs)"),
+    8: ("Markdown file path, page mapping path", "Parsed content (lines/blocks) with page numbers"),
+    9: ("Markdown content", "Structure dict: sections with full paths"),
+    10: ("Markdown, structure, page mapping", "List of Document chunks with metadata"),
+    11: ("Model names, base URL", "LLM, embeddings, vector_store, DocumentGraph (empty)"),
+    12: ("Structure dict", "Graph with section nodes and contains_section edges"),
+    13: ("Chunks by page, page mapping", "{page_number: classification_label}"),
+    14: ("Chunk list, LLM, vector_store, graph", "Updated Chroma, graph, JSON mapping (via 15–18)"),
+    15: ("Chunk text", "Chunk with metadata.summary"),
+    16: ("Chunk (text + metadata)", "Chunk stored in Chroma"),
+    17: ("Chunk, graph, structure", "Graph with chunk node and belongs_to/on_page/follows edges"),
+    18: ("Chunk embedding, Chroma, graph", "Graph with similar_to edges from this chunk"),
+    19: ("DocumentGraph, JSON mapping, Chroma", "Graph JSON file, vector_mapping JSON file, Chroma on disk"),
+    20: ("Query string, document_id", "Agent state after graph invocation"),
+    21: ("document_id", "Loaded vector_store, graph, chunks, LLM, page agent"),
+    22: ("User query", "is_page_summary, page_number (if page summary); route"),
     23: ("Query string", "Seed chunk IDs, similarity scores"),
-    24: ("Seed chunk IDs", "Expanded chunk IDs (via graph edges)"),
-    25: ("Combined seed + expanded chunk list", "Top 25 chunks in state['retrieved_chunks']"),
-    26: ("Query, retrieved chunks (top 12)", "Analysis text, needs_more_info (bool), new_query (optional)"),
-    27: ("New query, existing chunk IDs (to avoid duplicates)", "Additional chunks (up to 15) in state['second_retrieval_chunks']"),
-    28: ("Query, primary chunks, second chunks (if any)", "Final answer text"),
-    29: ("Final answer, chunks, stats", "QueryResponse JSON"),
-    30: ("Page number", "Page summary with key points, sections, classification"),
+    24: ("Seed chunk IDs", "Expanded chunk IDs (seed + graph neighbours)"),
+    25: ("Seed + expanded chunk IDs, chunk list", "state['retrieved_chunks'] (first N)"),
+    26: ("Query, retrieved chunks", "needs_more_info, new_query (optional)"),
+    27: ("new_query, existing chunk IDs", "state['second_retrieval_chunks'] (capped)"),
+    28: ("Query, primary chunks, second chunks", "state['final_answer']"),
+    29: ("Agent state (final_answer, chunks, stats)", "QueryResponse JSON"),
+    30: ("Page number", "Page summary text, key points, sections"),
 }
 
-# Simple examples. Column J (new column).
+# Simple examples. Column J. One action per step.
 EXAMPLES = {
-    1: "User selects policy.pdf in the UI → POST /upload → response: { document_id: 'a1b2c3-...', status: 'processing' }.",
-    2: "document_id triggers background job → task reads PDF from output/a1b2c3.../file.pdf → writes output/a1b2c3.../file.md and _page_mapping.json.",
-    3: "policy.pdf → Docling → markdown with '## Part A', '<!-- page break -->', tables, lists.",
-    4: "PDF bookmarks: 'Part A' (L1), 'Section 1' (L2) → markdown headings adjusted to # Part A, ## Section 1.",
-    5: "Markdown table with broken separators → fix_table() → valid markdown table with aligned columns.",
-    6: "Markdown with 10 page breaks → extract_page_mapping_from_markdown() → { line_to_page: {0:1, 45:2, ...}, total_pages: 10 }.",
-    7: "POST /vectorize { document_id } → 202 Accepted → background workflow starts; client polls status.",
-    8: "load_markdown('output/.../file.md') + page_mapping → list of (text, section_path, page_number) segments.",
-    9: "Markdown with ## Part A, ### 1.1 Definitions → structure: sections with full paths like 'Part A > 1.1 Definitions'.",
-    10: "8000-char section split into 4 chunks (2000 chars, 150 overlap), each with section_path 'Part A > 2. Payment', page_number, prev/next chunk IDs.",
-    11: "Ollama(base_url), OllamaEmbeddings(model='nomic-embed-text'), Chroma(persist_directory='.../vector_db') created.",
-    12: "Nodes: section:Part A, section:Section 2; edges: Part A → Section 2 (contains_section).",
-    13: "Page 3 chunks → LLM → page_classification[3] = 'Terms and conditions'.",
-    14: "Chunk 'The policy shall be governed...' → summary generated, embedded, added to Chroma and graph with edges to section and page.",
-    15: "Chunk text → LLM → 'Clause stating governing law is India.'.",
-    16: "Chunk (1800 chars) → truncated if needed → embedding vector → Chroma.add_documents([doc]).",
-    17: "Chunk 12 → edges: chunk:12 --belongs_to--> section:10. Jurisdiction, chunk:12 --on_page--> page:5, chunk:12 --follows--> chunk:11.",
-    18: "Chunk 5 embedding → similarity_search_with_score(k=10) → chunks 3, 7, 9 within threshold → add similar_to edges.",
-    19: "document_graph.save('.../graph.json'), json.dump(mapping, '.../vector_mapping.json'), Chroma persists to disk.",
-    20: "POST /query { document_id, query: 'What is the grace period?' } → load agent → state = { query: '...', ... }.",
-    21: "document_id → find vector_db path, mapping JSON, graph JSON → load Chroma, DocumentGraph, chunks list, Ollama LLM.",
-    22: "Query 'Summarize page 5' → is_page_summary=True, page_number=5 → route to summarize_page. Query 'What is the grace period?' → normal_retrieval.",
-    23: "Query 'grace period' → vector_search(k=20) → seed_chunk_ids=[7, 12, 3, ...], seed_chunk_scores={7:0.82, 12:0.78, ...}.",
-    24: "Seeds [7, 12, 3, 40, 11] → expand_from_chunks() → add parent sections, prev/next chunks, similar_to neighbours → graph_expanded_ids (e.g. 15 more).",
-    25: "28 chunks (20 seeds + 15 expanded, some overlap) → take first 25 → state['retrieved_chunks'] = list of 25 Document objects.",
-    26: "Query 'governing law'; 25 chunks → LLM: 'Partially; missing which country.' → needs_more_info=True, new_query='Which country laws govern this policy?'.",
-    27: "new_query='Which country laws govern...' → vector_search(k=15), graph expand → 4 new chunks (excluding already retrieved) → second_retrieval_chunks.",
-    28: "Query 'policy governed by which country?' + 29 chunks → prompt starts with 'QUESTION: policy governed by which country?' and repeats it → LLM returns answer citing document only.",
-    29: "final_answer, retrieved_chunks, second_retrieval_chunks, debug_info → QueryResponse(answer=..., retrieval_stats={...}, chunks_detail=[...]).",
-    30: "Query 'Summarize page 5' → load chunks for page 5 (and maybe 4, 6) → LLM → 'Page 5 covers Premium payment. Key points: ...'.",
+    1: "POST /upload with policy.pdf → file saved to output/{uuid}/policy.pdf → response: { document_id, status: 'processing' }.",
+    2: "process_pdf_background(pdf_path, document_id) called → task enqueued; when it runs, it will execute steps 3, 4, 5, 6.",
+    3: "Docling converts policy.pdf → raw markdown with '## Part A', '<!-- page break -->', tables.",
+    4: "ResultPostprocessor(doc).process() → headings adjusted using PDF bookmarks (e.g. # Part A, ## Section 1).",
+    5: "process_markdown(markdown) → tables fixed (separators, headers, empty columns).",
+    6: "extract_page_mapping_from_markdown(md) → { line_to_page: {0:1, 45:2, ...}, total_pages: 10 }.",
+    7: "POST /vectorize { document_id } → vectorize_background(document_id) enqueued; workflow will run steps 8–19.",
+    8: "load_markdown(path), page_mapping → parsed lines/blocks, each with page_number.",
+    9: "extract_document_structure(md) → { sections: [ { path: 'Part A > 2.1', ... } ] }.",
+    10: "create_enhanced_chunk() in loop → list of Document chunks with section_path, page_number, heading, prev/next.",
+    11: "Ollama(), OllamaEmbeddings(), Chroma(persist_directory=...) → LLM, embeddings, vector_store ready.",
+    12: "For each section in structure: add_section_node(), add_edge(parent, child, 'contains_section').",
+    13: "classify_pages() → { 1: 'Cover', 2: 'Terms', 3: 'Terms', ... }.",
+    14: "For each chunk: call step 15, then 16, then 17, then 18 → Chroma and graph updated.",
+    15: "get_summary_from_llm(chunk_text) → 'Clause stating governing law is India.'; store in chunk.metadata.",
+    16: "vector_store.add_documents([doc]) → chunk embedded and stored in Chroma.",
+    17: "add_chunk_node(chunk); add_edge(chunk, section, 'belongs_to'); add_edge(chunk, page, 'on_page'); add_edge(chunk, prev, 'follows').",
+    18: "similarity_search_with_score(chunk_embedding) → add similar_to edges to chunks within threshold.",
+    19: "document_graph.save('graph.json'); json.dump(mapping, 'vector_mapping.json'); Chroma persists.",
+    20: "POST /query { document_id, query } → load_agent_for_document(); agent.invoke(initial_state) → final_state.",
+    21: "load_chunks_from_mapping(), load_vector_store(), DocumentGraph.load() → vector_store, graph, chunks, LLM in memory.",
+    22: "classify_query(state) → is_page_summary=True, page_number=5 → route to step 30; else → step 23.",
+    23: "similarity_search_with_score(query, k=20) → seed_chunk_ids=[7,12,...], seed_chunk_scores={7:0.82,...}.",
+    24: "expand_from_chunks(top_5_seeds) → graph_expanded_ids (e.g. 16 more chunk IDs).",
+    25: "retrieved_chunks = [doc for id in (seed_ids + expanded_ids)][:25] → state['retrieved_chunks'].",
+    26: "analyze_chunks(state) → needs_more_info=True, new_query='Which country laws govern this policy?'.",
+    27: "second_retrieval(state) → vector search + expand with new_query → state['second_retrieval_chunks'] = [8 chunks].",
+    28: "generate_final_answer(state) → prompt with QUESTION + chunks → LLM → state['final_answer'] = answer text.",
+    29: "QueryResponse(answer=final_state['final_answer'], chunks_detail=..., retrieval_stats=...) → JSON response.",
+    30: "summarize_page(state) → load page 5 chunks → LLM → 'Page 5: Premium payment. Key points: ...'.",
 }
+
+# --------------- COMBINED STEPS (new sheet): fewer steps, all details preserved ---------------
+# Each tuple: (step#, name, description, module_file, models_tech, algorithms, key_functions, input, output, examples)
+COMBINED_STEPS = [
+    (1, "Upload & schedule PDF processing", "Receive PDF from client; save to document folder (UUID); return document_id and status. Enqueue a background task that, when run, executes: convert PDF to markdown (Docling, page-break placeholders), correct heading hierarchy (ResultPostprocessor from TOC/bookmarks), fix markdown tables (process_markdown), extract page mapping from markers. Task writes .md file and _page_mapping.json to the document folder.", "main.py, detection.py", "FastAPI, Docling, docling-hierarchical", "File save, UUID, background enqueue; PDF→markdown, heading correction, table fix, line→page extraction", "upload_pdf(), process_pdf_background(), process_single_pdf(), DocumentConverter.convert(), ResultPostprocessor.process(), process_markdown(), extract_page_mapping_from_markdown()", "PDF file (UploadFile)", "Saved PDF path, document_id, ProcessPDFResponse; then (when task runs) markdown file, page mapping JSON", "POST /upload → file saved, task enqueued; task runs: Docling→md, headings fixed, tables fixed, page_mapping.json written."),
+    (2, "PDF to markdown pipeline (convert, headings, tables, page mapping)", "Convert PDF to structured markdown with page-break placeholders (Docling). Correct heading levels using PDF TOC/bookmarks (ResultPostprocessor). Fix tables: separators, headers, trailing columns (process_markdown). Scan markers and build line-to-page map (extract_page_mapping_from_markdown or create_approximate_page_mapping). Save fixed markdown and page mapping JSON. All details as in steps 3–6.", "detection.py", "Docling, docling-hierarchical", "PDF parse, export_to_markdown(page_break_placeholder), TOC heading inference, table detect/fix, page-break scan", "DocumentConverter.convert(), export_to_markdown(), ResultPostprocessor.process(), process_markdown(), fix_table(), extract_page_mapping_from_markdown(), create_approximate_page_mapping()", "PDF file", "Raw markdown with page breaks; document with corrected headings; fixed markdown; page mapping JSON {line_to_page, page_boundaries, total_pages}. Files written to document folder.", "policy.pdf → Docling → md with breaks; headings fixed; tables fixed; extract_page_mapping_from_markdown() → JSON; both files saved."),
+    (3, "Schedule vectorization & load document (parse, structure)", "Enqueue background vectorization workflow; create state (markdown path, document folder). When workflow runs: load markdown file and page-mapping JSON; parse markdown into lines/blocks and attach page numbers. Scan markdown for headers (#, ##, …) and build section tree with full paths (e.g. 'Part A > Section 2 > 2.1'). Combines steps 7–9.", "main.py, vectorizerE.py", "FastAPI, LangGraph", "Background enqueue; read file, parse, attach page numbers; regex headers, section tree with full paths", "vectorize_document(), vectorize_background(), load_markdown(), parse_markdown_enhanced(), extract_document_structure()", "document_id; then markdown path, page mapping path", "Enqueued workflow; then parsed content (lines/blocks + page numbers), structure dict (sections with full paths)", "POST /vectorize → workflow enqueued; workflow: load_markdown(), parse → blocks+page; extract_document_structure() → section tree."),
+    (4, "Create chunks & initialize models", "Split markdown into fixed-size chunks (e.g. 2000 chars, 150 overlap). Assign each chunk: section_path from structure, page_number from page mapping, heading, prev/next chunk IDs; drop empty/duplicate. Initialize Ollama LLM and embedding model; create Chroma vector store with persist directory. Combines steps 10–11.", "vectorizerE.py", "Ollama (llama3.1, nomic-embed-text), Chroma", "Size/overlap split, section/page/prev/next metadata; LLM and embedding client, Chroma persist_directory", "create_enhanced_chunk(), is_chunk_empty(); Ollama(), OllamaEmbeddings(), Chroma(persist_directory)", "Markdown, structure, page mapping; model names, base URL", "List of Document chunks with metadata; initialized LLM, embeddings, vector_store, empty DocumentGraph", "Chunks created with section_path, page_number; Ollama(), Chroma() created."),
+    (5, "Build section graph & classify pages", "Add one graph node per section from structure; add directed edge from each parent to child (contains_section). For each page, call LLM to assign a short label (1–4 words) from page content. Output: graph with section nodes and edges; dict page_number → classification_label. Combines steps 12–13.", "vectorizerE.py", "NetworkX, Ollama LLM", "Section nodes, parent→child edges; per-page LLM classification", "add_section_node(), add_edge(contains_section); classify_pages(), classify_page_with_llm()", "Structure dict; chunks grouped by page, page mapping", "Graph with section nodes and contains_section edges; {page_number: classification_label}", "add_section_node() for each section; classify_pages() → {1:'Cover', 2:'Terms', ...}."),
+    (6, "Process chunks: summary, embed, graph (per chunk)", "For each chunk in order: (1) Generate one-line summary via LLM (token-limited); attach to chunk metadata. (2) Truncate if over embedding limit; compute embedding; add chunk to Chroma. (3) Add chunk node to graph; edges: belongs_to section, on_page, follows prev/next. (4) Vector search from chunk embedding; add similar_to edges to chunks within threshold. Combines steps 14–18.", "vectorizerE.py", "Ollama LLM, nomic-embed-text, Chroma, NetworkX", "Per chunk: get_summary_from_llm; add_documents; add_chunk_node, belongs_to/on_page/follows; similarity_search_with_score, similar_to edges", "process_chunks_one_by_one(), get_summary_from_llm(), vector_store.add_documents(), add_chunk_node(), add_edge(), similarity_search_with_score()", "Chunk list, LLM, vector_store, graph, structure", "Chroma filled with chunks; graph with chunk nodes, section/page/follows/similar_to edges; JSON mapping entries", "For each chunk: summary → embed → Chroma; chunk node + edges; similar_to edges from vector search."),
+    (7, "Persist vectorization outputs", "Write document graph to JSON file. Write vector mapping (chunk list with metadata) to JSON file. Persist Chroma collection to disk. Retrieval agent will load these. Step 19.", "vectorizerE.py", "Chroma, JSON", "Save graph JSON, dump mapping JSON, Chroma persist_directory", "document_graph.save(), json.dump(), Chroma persist", "DocumentGraph, JSON mapping, Chroma", "Graph JSON file, vector_mapping JSON file, Chroma on disk", "document_graph.save('graph.json'); json.dump(mapping, 'vector_mapping.json'); Chroma persists."),
+    (8, "Submit query & load agent", "Validate request (query, document_id). Load agent resources: Chroma vector store, document graph (NetworkX), chunk list from vector mapping JSON, LLM; optionally page summarization agent. Put query into agent state and invoke the agent graph. Combines steps 20–21.", "main.py, retrivalAgentE.py", "FastAPI, Chroma, NetworkX, Ollama", "Request validation; load vector store, graph, chunks, LLM, page agent; agent.invoke(initial_state)", "query_document(), load_agent_for_document(), load_chunks_from_mapping(), load_vector_store(), DocumentGraph.load(), load_page_agent(), agent.invoke()", "Query string, document_id", "Agent state after graph invocation (includes loaded vector_store, graph, chunks, LLM)", "POST /query → load_agent_for_document(); agent.invoke({query, ...}) → final_state."),
+    (9, "Classify query & retrieve (vector search + graph expansion)", "Classify query as page-summary (e.g. 'summarize page 5') or normal retrieval; route accordingly. For normal: embed query; vector search in Chroma (top-k by L2 distance); convert to similarity scores. From top seed chunks, traverse graph (parent sections, adjacent prev/next, similar_to); cap expansion. Take first N chunks (e.g. 25) as retrieved_chunks. Combines steps 22–25.", "retrivalAgentE.py", "Ollama LLM, regex, Chroma, nomic-embed-text, NetworkX", "classify_query, route; similarity_search_with_score(query, k=20); expand_from_chunks (sections, adjacent, similar_to); cap N chunks", "classify_query(), route_query_type(), similarity_search_with_score(), distance_to_similarity(), expand_from_chunks(), get_parent_section(), get_adjacent_chunks(), get_similar_chunks()", "User query; then query string; then seed chunk IDs", "is_page_summary, page_number (if page); or seed_chunk_ids, similarity scores; expanded IDs; state['retrieved_chunks']", "classify → normal_retrieval; vector search → seeds; expand_from_chunks() → state['retrieved_chunks'][:25]."),
+    (10, "Analyze chunks & optional second retrieval", "LLM analyzes retrieved chunks: do they suffice to answer the query? If not, produce one follow-up query. If needs_more_info and new_query: embed new_query; vector search (top-k); graph expand; exclude already-retrieved; cap new set (e.g. 15); append to state as second_retrieval_chunks. Combines steps 26–27.", "retrivalAgentE.py", "Ollama LLM, Chroma, NetworkX", "analyze_chunks (suffice? one follow-up query); second_retrieval: vector search + expand, cap, append", "analyze_chunks(), should_continue_search(), second_retrieval(), similarity_search_with_score(new_query, k=15)", "Query, retrieved chunks; then new_query, existing chunk IDs", "needs_more_info, new_query; state['second_retrieval_chunks'] (if second retrieval run)", "analyze_chunks() → needs_more_info=True, new_query='...'; second_retrieval() → 8 new chunks appended."),
+    (11, "Generate final answer & format API response", "Build prompt with user question at top and repeated before answer instruction; fill context with primary and (if any) second retrieval chunks. Call LLM; answer from chunks only; no chunk numbers in answer. Map agent state to API schema: answer, optional chunk details, retrieval_stats, second_query if used. Combines steps 28–29.", "retrivalAgentE.py, main.py", "Ollama LLM, FastAPI, Pydantic", "generate_final_answer (QUESTION + chunks prompt); QueryResponse schema mapping", "generate_final_answer(), answer_prompt with QUESTION block; QueryResponse(), ChunkDetail(), retrieval_stats", "Query, primary chunks, second chunks; then final_answer, chunks, stats", "state['final_answer']; QueryResponse JSON (answer, chunks_detail, retrieval_stats)", "generate_final_answer() → prompt + LLM → final_answer; QueryResponse(...) → JSON response."),
+    (12, "Page summarization", "When query is classified as page-summary: load chunks for the requested page (and optionally adjacent pages) from graph/mapping. Call LLM to produce a short summary, key points, and section labels. Return as final answer. Step 30.", "main.py, page_summarization.py", "Ollama LLM, DocumentGraph", "Load page chunks (and adjacent if needed); LLM summary and key points", "load_page_agent(), summarize_page(), _generate_summary_with_llm()", "Page number", "Page summary text, key points, sections, classification", "Query 'Summarize page 5' → load page 5 chunks → LLM → 'Page 5: Premium payment. Key points: ...'."),
+]
 
 
 def main():
@@ -189,8 +207,49 @@ def main():
                     sum_ws.cell(row=row_idx, column=2).value = None
                 break
 
+    # New sheet: Combined Steps (fewer steps, all details preserved) — same visual style as Pipeline Steps
+    combined_sheet_name = "Combined Steps"
+    if combined_sheet_name in wb.sheetnames:
+        del wb[combined_sheet_name]
+    combined_ws = wb.create_sheet(combined_sheet_name)
+    headers = ("Step #", "Step Name", "Description", "Module/File", "Models & Technologies", "Algorithms & Methods", "Key Functions", "Input", "Output", "Examples")
+    for col, h in enumerate(headers, 1):
+        combined_ws.cell(row=1, column=col, value=h)
+    for i, row_data in enumerate(COMBINED_STEPS):
+        row_idx = i + 2
+        for col, val in enumerate(row_data, 1):
+            combined_ws.cell(row=row_idx, column=col, value=val)
+
+    # Match Pipeline Steps formatting: header row (blue fill, white bold, center, wrap); data (wrap, top align); column widths; row heights
+    header_fill = PatternFill(patternType="solid", fgColor="FF366092", bgColor="FF366092")
+    header_font = Font(name="Calibri", size=12, bold=True, color="FFFFFFFF")
+    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    data_alignment = Alignment(vertical="top", wrap_text=True)
+    for col in range(1, 11):
+        combined_ws.cell(row=1, column=col).fill = header_fill
+        combined_ws.cell(row=1, column=col).font = header_font
+        combined_ws.cell(row=1, column=col).alignment = header_alignment
+    for row_idx in range(2, combined_ws.max_row + 1):
+        for col in range(1, 11):
+            combined_ws.cell(row=row_idx, column=col).alignment = data_alignment
+    # Same column widths as Pipeline Steps
+    combined_ws.column_dimensions["A"].width = 8.0
+    combined_ws.column_dimensions["B"].width = 25.0
+    combined_ws.column_dimensions["C"].width = 50.0
+    combined_ws.column_dimensions["D"].width = 20.0
+    combined_ws.column_dimensions["E"].width = 35.0
+    combined_ws.column_dimensions["F"].width = 40.0
+    combined_ws.column_dimensions["G"].width = 30.0
+    combined_ws.column_dimensions["H"].width = 25.0
+    combined_ws.column_dimensions["I"].width = 30.0
+    combined_ws.column_dimensions["J"].width = 38.29
+    # Row heights: header; data rows taller so wrapped text fits
+    combined_ws.row_dimensions[1].height = 15.75
+    for row_idx in range(2, combined_ws.max_row + 1):
+        combined_ws.row_dimensions[row_idx].height = 90
+
     wb.save(path)
-    print("Filled Pipeline Steps: descriptions, examples, no re-ranking. Saved:", path.absolute())
+    print("Filled Pipeline Steps + Combined Steps sheet. Saved:", path.absolute())
 
 
 if __name__ == "__main__":

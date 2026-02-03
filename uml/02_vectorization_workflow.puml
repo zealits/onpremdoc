@@ -1,0 +1,96 @@
+@startuml
+title Vectorization Workflow (Steps 7–19)
+
+actor User
+participant "Frontend" as FE
+participant "FastAPI\n(main.py)" as API
+participant "BackgroundTasks" as BG
+participant "Vectorizer Workflow\n(vectorizerE.py)" as VW
+database "Document Folder\noutput/{document_id}" as DOC
+database "Chroma\n(Vector DB)" as CH
+participant "DocumentGraph" as DG
+participant "Ollama LLM" as LLM
+
+' 7. Schedule vectorization task
+User -> FE: Click "Vectorize" for document
+FE -> API: POST /vectorize/{document_id}
+activate API
+API -> DOC: verify markdown + page_mapping exist
+API -> BG: add_task(vectorize_background,\n document_id)
+API --> FE: 202 Accepted\n{ document_id, status: processing }
+deactivate API
+
+' 8. Background vectorization entry
+BG -> API: call vectorize_background(document_id)
+activate API
+API -> DOC: locate document folder\noutput/{document_id}
+API -> VW: create VectorizerState\n  markdown_file = doc_path\n  output_folder = doc_path\n  page_mapping = None\n  chunks = []\n  structure = {}\n  document_graph = DocumentGraph()
+
+' 9. Load markdown + page mapping
+activate VW
+VW -> DOC: load file.md\n(load_markdown)
+VW -> DOC: load _page_mapping.json\n(if present)
+VW -> VW: parsed = parse_markdown_enhanced(\n markdown, page_mapping)
+VW -> VW: structure = extract_document_structure(\n parsed)
+
+' 10. Create enhanced chunks
+VW -> VW: for each parsed segment:\n  chunk = create_enhanced_chunk(...)\n  assign section_path, page_number,\n  heading, prev/next\nVW -> VW: state["chunks"] = list[Document]
+
+' 11. Initialize LLM + vector store
+VW -> LLM: init Ollama LLM (e.g. llama3.1)
+VW -> CH: init Chroma\n persist_directory=output/{document_id}/vector_db
+VW -> DG: use empty DocumentGraph\n from state
+
+' 12. Build section graph
+VW -> DG: add_section_node(section)\nfor each section in structure
+VW -> DG: add_edge(parent, child,\n relation="contains_section")
+
+' 13. Page classification
+VW -> VW: group chunks by page_number
+VW -> LLM: classify_pages(chunks_by_page)\n(page_summaries prompt)
+LLM --> VW: { page_number: label }
+VW -> VW: state["page_classifications"] = labels
+
+' 14–18. Process chunks
+loop for each chunk in state["chunks"]
+  ' 15. Summary
+  VW -> LLM: get_summary_from_llm(chunk.text)
+  LLM --> VW: one-line summary
+  VW -> VW: chunk.metadata["summary"] = summary
+
+  ' 16. Embedding + add to Chroma
+  VW -> CH: add_documents([chunk])
+  CH --> VW: ok
+
+  ' 17. Chunk node + section/page/prev/next edges
+  VW -> DG: add_chunk_node(chunk)
+  VW -> DG: add_edge(chunk, section,\n    relation="belongs_to")\nwhere section = structure match
+  VW -> DG: add_edge(chunk, page,\n    relation="on_page")\nwhere page = chunk.metadata.page_number
+  VW -> DG: add_edge(prev_chunk, chunk,\n    relation="follows")\nif prev exists
+
+  ' 18. Similarity edges
+  VW -> CH: similarity_search_with_score(\n    chunk, k=K)\nK = small neighbourhood size
+  CH --> VW: similar chunks + distances
+  VW -> DG: add_edge(chunk, sim_chunk,\n    relation="similar_to")\nif similarity >= threshold
+end
+
+' 19. Persist outputs
+VW -> DOC: save graph JSON\n   (.._document_graph.json)
+VW -> DOC: save vector_mapping JSON\n   (.._vector_mapping.json)
+VW -> CH: persist vector DB to disk\n   (Chroma collection)
+
+deactivate VW
+deactivate API
+
+note right of DOC
+After vectorization for a document_id,
+the backend has:
+- file.md (fixed markdown)
+- _page_mapping.json
+- *_document_graph.json (graph)
+- *_vector_mapping.json (chunks + metadata)
+- Chroma vector DB (embeddings)
+end note
+
+@enduml
+
