@@ -59,6 +59,14 @@ from page_summarization import (
     load_page_agent,
     PageSummarizationAgent,
 )
+from economics_tracker import (
+    log_upload,
+    log_pdf_processing,
+    log_vectorization,
+    log_query_usage,
+    log_page_summary,
+    get_usage_summary,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -500,6 +508,7 @@ async def root():
             "query": "/query",
             "visualize": "/visualize/{document_id}",
             "page_summarize": "/page/{document_id}/summarize",
+            "economics_summary": "/economics/summary",
         }
     }
 
@@ -645,6 +654,8 @@ async def upload_pdf(
     pdf_path = doc_path / file.filename
     with open(pdf_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
+    file_size = pdf_path.stat().st_size
+    log_upload(document_id, file_size_bytes=file_size, filename=file.filename or "")
     
     # Process in background
     background_tasks.add_task(process_pdf_background, str(pdf_path), document_id)
@@ -666,6 +677,19 @@ def process_pdf_background(pdf_path: str, document_id: str):
         
         # Process PDF directly in the document_id folder - no temporary folder needed
         process_single_pdf(pdf_file, OUTPUT_DIR, target_dir=doc_path)
+        
+        # Economics: log PDF processing step (page count from page mapping if available)
+        total_pages = None
+        md_files = list(doc_path.glob("*.md"))
+        if md_files:
+            pm_path = doc_path / f"{md_files[0].stem}_page_mapping.json"
+            if pm_path.exists():
+                try:
+                    with open(pm_path, "r", encoding="utf-8") as f:
+                        total_pages = json.load(f).get("total_pages")
+                except Exception:
+                    pass
+        log_pdf_processing(document_id, total_pages=total_pages)
         
         logger.info(f"PDF processing complete for document {document_id}")
     except Exception as e:
@@ -734,6 +758,7 @@ def vectorize_background(document_id: str):
             "page_mapping": None,
             "page_classifications": None,
             "output_folder": str(doc_path),
+            "token_usage": None,
         }
         
         logger.info(f"📊 Creating vectorization workflow...")
@@ -744,6 +769,17 @@ def vectorize_background(document_id: str):
         logger.info(f"   This may take several minutes depending on document size...")
         
         final_state = workflow.invoke(initial_state)
+        
+        # Economics: persist vectorization token usage for stakeholder reporting
+        usage = final_state.get("token_usage")
+        if usage:
+            log_vectorization(
+                document_id,
+                embedding_tokens=usage.get("embedding_tokens", 0),
+                llm_tokens=usage.get("llm_tokens", 0),
+                total_chunks=usage.get("total_chunks", 0),
+                truncated_chunks=usage.get("truncated_chunks", 0),
+            )
         
         # Log results
         total_chunks = len(final_state.get("json_mapping", []))
@@ -762,6 +798,21 @@ def vectorize_background(document_id: str):
         logger.error(f"❌ Error vectorizing document {document_id}: {e}")
         logger.error(f"{'='*80}")
         logger.error(f"Error details:", exc_info=True)
+
+
+@app.get("/economics/summary", tags=["Economics"])
+async def economics_summary(date: Optional[str] = Query(None, description="Date YYYY-MM-DD (default: today UTC)")):
+    """
+    Token usage and cost visibility for stakeholders.
+    Returns aggregated token counts by phase (upload, vectorization, retrieval, page_summary)
+    and by step. Data is read from the economics/ folder (usage_<date>.jsonl).
+    """
+    try:
+        summary = get_usage_summary(date_str=date)
+        return summary
+    except Exception as e:
+        logger.error(f"Economics summary error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/query", response_model=QueryResponse, tags=["Retrieval"])
@@ -807,11 +858,17 @@ async def query_document(request: QueryRequest):
         "iteration_count": 0,
         "document_folder": None,
         "debug_info": {},
+        "token_usage": [],
     }
     
     # Run agent
     try:
         final_state = agent.invoke(initial_state)
+        
+        # Economics: persist query token usage for stakeholder reporting
+        steps = final_state.get("token_usage") or []
+        if steps:
+            log_query_usage(request.document_id, steps)
         
         # Build retrieval stats - use scores from state if available
         seed_chunk_ids = set(final_state.get("seed_chunk_ids", []))
@@ -1150,6 +1207,18 @@ async def summarize_page(
         
         # Generate summary
         summary_result = agent.summarize_page(page_number, use_adjacent_if_empty=True)
+        
+        # Economics: log page summarization token usage (estimated from content + summary length)
+        chunks_used = len(summary_result.chunks_used) if summary_result.chunks_used else 0
+        input_est = (chunks_used * 500 + 500) // 4  # prompt + chunk content
+        output_est = max(1, len(summary_result.summary) // 4)
+        log_page_summary(
+            document_id,
+            page_number,
+            input_tokens_estimate=input_est,
+            output_tokens_estimate=output_est,
+            chunks_used=chunks_used,
+        )
         
         # Convert to response model
         return PageSummaryResponse(

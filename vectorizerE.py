@@ -200,6 +200,15 @@ class TokenTracker:
         """Get token usage statistics"""
         return self.stats.copy()
 
+    def reset_stats(self) -> None:
+        """Reset stats for a new vectorization run (so each document is counted separately)."""
+        self.stats = {
+            "embedding_tokens": 0,
+            "llm_tokens": 0,
+            "total_chunks": 0,
+            "truncated_chunks": 0,
+        }
+
 # Global token tracker
 token_tracker = TokenTracker()
 
@@ -917,54 +926,6 @@ def classify_pages(chunks: List[Document], page_mapping: Optional[Dict[str, Any]
     logger.info(f"Classified {len(page_classifications)} pages")
     return page_classifications
 
-def get_summary_from_llm(text: str, llm: Ollama) -> str:
-    """Get one-line summary from Ollama LLM with token tracking"""
-    text_for_summary, was_truncated = token_tracker.check_llm_limit(text[:2000], max_tokens=500)
-    
-    prompt = f"""Summarize the following text in one concise sentence (aim for 100 words). Be complete but brief. Return only the summary text, no labels or explanations:
-
-{text_for_summary}"""
-    
-    try:
-        response = llm.invoke(prompt)
-        summary = response.strip()
-        
-        patterns_to_remove = [
-            r"^Here is a concise one-line summary[:\s]*",
-            r"^Summary[:\s]*",
-            r"^Here's the summary[:\s]*",
-            r"^The summary is[:\s]*",
-            r"^One-line summary[:\s]*",
-            r"^Concise summary[:\s]*",
-            r"^Summary of the text[:\s]*",
-            r"^The following text[:\s]*",
-        ]
-        
-        for pattern in patterns_to_remove:
-            summary = re.sub(pattern, "", summary, flags=re.IGNORECASE)
-        
-        # Take first line only (in case LLM adds extra lines)
-        summary = summary.split("\n")[0].strip()
-        summary = re.sub(r'^[:\-\"\']+\s*', '', summary)
-        summary = re.sub(r'\s*[:\-\"\']+$', '', summary)
-        
-        # NO TRUNCATION - return summary as-is
-        if not summary or len(summary) < 10:
-            sentences = text.split(". ")
-            if sentences:
-                fallback = sentences[0]
-                return fallback
-            return text[:200]  # Only for fallback, no truncation marker
-        
-        return summary
-    except Exception as e:
-        logger.warning(f"Error getting summary: {e}")
-        sentences = text.split(". ")
-        if sentences:
-            fallback = sentences[0]
-            return fallback
-        return text[:200]  # Only for fallback, no truncation marker
-
 # ---------------- STATE DEFINITION ---------------- 
 class VectorizerState(TypedDict):
     """State for the vectorization workflow"""
@@ -978,6 +939,7 @@ class VectorizerState(TypedDict):
     page_mapping: Optional[Dict[str, Any]]
     page_classifications: Optional[Dict[int, str]]
     output_folder: Optional[str]
+    token_usage: Optional[Dict[str, Any]]  # For economics tracker: embedding_tokens, llm_tokens, total_chunks, truncated_chunks
 
 # ---------------- WORKFLOW NODES ---------------- 
 def load_markdown(state: VectorizerState) -> VectorizerState:
@@ -1033,6 +995,9 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
     chunks = state["chunks"]
     structure = state["structure"]
     output_folder = Path(state.get("output_folder", "output"))
+    
+    # Reset token stats so this run's usage is logged correctly (economics tracker)
+    token_tracker.reset_stats()
     
     # Get document name from folder or markdown file
     if output_folder.is_dir():
@@ -1219,8 +1184,8 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
         
         section_path = chunk.metadata.get("section_path", "")
         
-        # Get summary
-        summary = get_summary_from_llm(chunk.page_content, llm)
+        # No chunk summary (not used downstream); keep key for compatibility
+        summary = ""
         
         # Prepare content for embedding
         content = chunk.page_content
@@ -1531,8 +1496,9 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
     state['document_graph'] = document_graph
     state['json_mapping'] = json_mapping
     
-    # Log stats
+    # Log stats and attach token usage for economics tracking (main.py will persist to economics/)
     final_stats = token_tracker.get_stats()
+    state['token_usage'] = final_stats
     logger.info("=" * 60)
     logger.info("Token Usage Statistics:")
     logger.info(f"  Total chunks processed: {final_stats['total_chunks']}")

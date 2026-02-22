@@ -257,6 +257,30 @@ class AgentState(TypedDict):
     iteration_count: int
     document_folder: Optional[str]  # Path to document folder for page summarization
     debug_info: Dict[str, Any]  # Debugging information
+    token_usage: Optional[List[Dict[str, Any]]]  # Per-step token counts for economics reporting
+
+# ---------------- TOKEN USAGE HELPERS (economics) ----------------
+def _est_tokens(text: str) -> int:
+    """Estimate token count from text (~4 chars per token)."""
+    if not text:
+        return 0
+    return max(1, len(str(text).strip()) // 4)
+
+def _append_token_usage(
+    state: AgentState,
+    step: str,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    embedding_tokens: int = 0,
+    extra: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Append one step's token usage to state for economics logging."""
+    usage = state.get("token_usage") or []
+    rec = {"step": step, "input_tokens": input_tokens, "output_tokens": output_tokens, "embedding_tokens": embedding_tokens}
+    if extra:
+        rec["extra"] = extra
+    usage.append(rec)
+    state["token_usage"] = usage
 
 # ---------------- LOAD FUNCTIONS ---------------- 
 def load_chunks_from_mapping(mapping_file: Path) -> List[Document]:
@@ -371,7 +395,12 @@ PAGE_NUMBER: [number if YES, else None]"""
     
     try:
         response = llm.invoke(classification_prompt)
-        response_text = response.strip()
+        response_text = (getattr(response, "content", None) or str(response)).strip()
+        _append_token_usage(
+            state, "query_classification",
+            input_tokens=_est_tokens(classification_prompt),
+            output_tokens=_est_tokens(response_text),
+        )
         
         is_page_summary = False
         page_num = None
@@ -491,6 +520,9 @@ def initial_retrieval(state: AgentState) -> AgentState:
     
     logger.info(f"Found {len(seed_chunk_ids)} seed chunks from vector search")
     
+    # Economics: query embedding for vector search
+    _append_token_usage(state, "initial_retrieval", embedding_tokens=_est_tokens(query))
+    
     # Step 2: Filter seed chunks by similarity threshold and select top-k for expansion
     SIMILARITY_THRESHOLD = 0.3  # Minimum similarity to consider
     TOP_SEEDS_FOR_EXPANSION = 5  # Only expand from top 5 most relevant seeds
@@ -600,7 +632,13 @@ RELATED_QUERY: [one query or None]"""
     
     try:
         response = llm.invoke(analysis_prompt)
-        analysis = response.strip()
+        response_str = (getattr(response, "content", None) or str(response)).strip()
+        analysis = response_str
+        _append_token_usage(
+            state, "analyze_chunks",
+            input_tokens=_est_tokens(analysis_prompt),
+            output_tokens=_est_tokens(response_str),
+        )
         
         # Parse response
         needs_more = False
@@ -706,6 +744,7 @@ def second_retrieval(state: AgentState) -> AgentState:
         logger.warning(f"Vector search error: {e}")
     
     logger.info(f"Found {len(second_seed_ids)} new seed chunks")
+    _append_token_usage(state, "second_retrieval", embedding_tokens=_est_tokens(new_query or ""))
     
     # Step 2: Selective graph expansion - only from top relevant seeds
     SIMILARITY_THRESHOLD = 0.3
@@ -826,7 +865,13 @@ Answer (use only the chunks above; no chunk numbers; markdown ok; answer in deta
     
     try:
         response = llm.invoke(answer_prompt)
-        final_answer = response.strip()
+        response_str = (getattr(response, "content", None) or str(response)).strip()
+        final_answer = response_str
+        _append_token_usage(
+            state, "generate_answer",
+            input_tokens=_est_tokens(answer_prompt),
+            output_tokens=_est_tokens(response_str),
+        )
         
         # Post-process to remove any chunk references that might have slipped through
         # Remove patterns like "Chunk 12", "(Chunk 12)", "[Chunk 12]", etc.
