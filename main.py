@@ -30,11 +30,11 @@ from pydantic import BaseModel, Field
 
 # Import modules
 from detection import process_single_pdf, extract_page_mapping_from_markdown
+from config.inference_config import check_inference_ready, get_llm
 from vectorizerE import (
     create_vectorization_workflow,
     VectorizerState,
     DocumentGraph,
-    check_ollama_running,
 )
 from retrivalAgentE import (
     create_retrieval_agent,
@@ -254,12 +254,12 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     logger.info("Starting application...")
     
-    # Check Ollama on startup
-    is_running, models = check_ollama_running()
+    # Check inference backend on startup
+    is_running, models = check_inference_ready()
     if not is_running:
-        logger.warning("Ollama server not detected. Some features may not work.")
+        logger.warning("Inference backend not detected. Some features may not work.")
     else:
-        logger.info(f"Ollama server detected with {len(models)} models")
+        logger.info("Inference backend ready: %s", models[:5] if len(models) > 5 else models)
     
     yield
     
@@ -456,22 +456,13 @@ def load_agent_for_document(document_id: str) -> Dict[str, Any]:
     from retrivalAgentE import (
         load_chunks_from_mapping,
         load_vector_store,
-        Ollama,
-        EMBEDDING_MODEL,
-        LLM_MODEL,
-        OLLAMA_BASE_URL,
     )
     
     chunks = load_chunks_from_mapping(vector_mapping_file)
     document_graph = RetrievalDocumentGraph()
     document_graph.load(graph_file)
     vector_store = load_vector_store(vector_db_path)
-    
-    llm = Ollama(
-        model=LLM_MODEL,
-        base_url=OLLAMA_BASE_URL,
-        temperature=0.3
-    )
+    llm = get_llm(temperature=0.3)
     
     # Create agent (pass document folder for page summarization)
     agent = create_retrieval_agent(vector_store, document_graph, chunks, llm, doc_path)
@@ -515,8 +506,8 @@ async def root():
 
 @app.get("/health", response_model=HealthResponse, tags=["General"])
 async def health_check():
-    """Health check endpoint"""
-    is_running, models = check_ollama_running()
+    """Health check endpoint (inference backend: Ollama or Hugging Face)"""
+    is_running, models = check_inference_ready()
     return HealthResponse(
         status="healthy" if is_running else "degraded",
         ollama_available=is_running,

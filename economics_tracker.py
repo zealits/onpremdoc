@@ -12,6 +12,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+def _model_label(model: str) -> str:
+    """Default model label from inference provider when not specified."""
+    if model:
+        return model
+    try:
+        from config.inference_config import get_provider_name
+        return get_provider_name()
+    except Exception:
+        return "ollama"
+
 logger = logging.getLogger(__name__)
 
 # Folder where all economics data is stored (for stakeholder reports)
@@ -76,7 +86,7 @@ def log_step(
         "output_tokens": output_tokens,
         "embedding_tokens": embedding_tokens,
         "total_tokens": input_tokens + output_tokens + embedding_tokens,
-        "model": model or "ollama",
+        "model": _model_label(model),
         "cost_estimate_usd": 0.0,  # Override if you add pricing
     }
     if extra:
@@ -184,7 +194,7 @@ def log_query_usage(
             "output_tokens": s.get("output_tokens", 0),
             "embedding_tokens": s.get("embedding_tokens", 0),
             "total_tokens": s.get("input_tokens", 0) + s.get("output_tokens", 0) + s.get("embedding_tokens", 0),
-            "model": "ollama",
+            "model": _model_label(""),
         }
         if s.get("extra"):
             record["extra"] = s["extra"]
@@ -201,7 +211,7 @@ def log_query_usage(
         "output_tokens": total_out,
         "embedding_tokens": total_emb,
         "total_tokens": total_in + total_out + total_emb,
-        "model": "ollama",
+        "model": _model_label(""),
         "extra": {"sub_steps": len(steps)},
     }
     with open(jsonl_path, "a", encoding="utf-8") as f:

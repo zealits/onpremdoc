@@ -22,12 +22,12 @@ except ImportError:
     sys.exit(1)
 
 # LangChain imports
-from langchain_community.embeddings import OllamaEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
-from langchain_ollama import OllamaLLM as Ollama
 from langgraph.graph import StateGraph, END
 from typing_extensions import TypedDict
+
+from config.inference_config import get_embeddings, get_llm
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -39,11 +39,6 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("langchain").setLevel(logging.WARNING)
 logging.getLogger("langchain_community").setLevel(logging.WARNING)
-
-# ---------------- CONFIGURATION ---------------- 
-EMBEDDING_MODEL = "nomic-embed-text:v1.5"
-LLM_MODEL = "llama3.1:8b"
-OLLAMA_BASE_URL = "http://localhost:11434"
 
 # ---------------- DOCUMENT GRAPH ---------------- 
 class DocumentGraph:
@@ -304,21 +299,15 @@ def load_chunks_from_mapping(mapping_file: Path) -> List[Document]:
     return chunks
 
 def load_vector_store(vector_db_path: Path) -> Chroma:
-    """Load Chroma vector store"""
+    """Load Chroma vector store (uses inference_config for embeddings)."""
     if not vector_db_path.exists():
         logger.error(f"Vector DB path not found: {vector_db_path}")
         sys.exit(1)
-    
-    embeddings = OllamaEmbeddings(
-        model=EMBEDDING_MODEL,
-        base_url=OLLAMA_BASE_URL
-    )
-    
+    embeddings = get_embeddings()
     vector_store = Chroma(
         embedding_function=embeddings,
         persist_directory=str(vector_db_path)
     )
-    
     logger.info(f"Loaded vector store from: {vector_db_path}")
     return vector_store
 
@@ -326,11 +315,11 @@ def load_vector_store(vector_db_path: Path) -> Chroma:
 _vector_store: Optional[Chroma] = None
 _document_graph: Optional[DocumentGraph] = None
 _chunks: List[Document] = []
-_llm: Optional[Ollama] = None
+_llm: Optional[Any] = None  # BaseChatModel (Ollama or Hugging Face)
 _page_agent: Optional[Any] = None  # PageSummarizationAgent
 _document_folder: Optional[Path] = None
 
-def set_agent_resources(vector_store: Chroma, document_graph: DocumentGraph, chunks: List[Document], llm: Ollama, document_folder: Optional[Path] = None):
+def set_agent_resources(vector_store: Chroma, document_graph: DocumentGraph, chunks: List[Document], llm: Any, document_folder: Optional[Path] = None):
     """Set global resources for agent nodes"""
     global _vector_store, _document_graph, _chunks, _llm, _page_agent, _document_folder
     _vector_store = vector_store
@@ -339,11 +328,11 @@ def set_agent_resources(vector_store: Chroma, document_graph: DocumentGraph, chu
     _llm = llm
     _document_folder = document_folder
     
-    # Load page summarization agent if document folder is provided
+    # Load page summarization agent if document folder is provided (reuse same LLM)
     if document_folder:
         try:
             from page_summarization import load_page_agent
-            _page_agent = load_page_agent(document_folder)
+            _page_agent = load_page_agent(document_folder, llm=llm)
             if _page_agent:
                 logger.info("Page summarization agent loaded successfully")
             else:
@@ -953,7 +942,7 @@ def should_continue_search(state: AgentState) -> Literal["second_retrieval", "ge
         return "generate_answer"
 
 # ---------------- WORKFLOW CREATION ---------------- 
-def create_retrieval_agent(vector_store: Chroma, document_graph: DocumentGraph, chunks: List[Document], llm: Ollama, document_folder: Optional[Path] = None) -> StateGraph:
+def create_retrieval_agent(vector_store: Chroma, document_graph: DocumentGraph, chunks: List[Document], llm: Any, document_folder: Optional[Path] = None) -> StateGraph:
     """Create the LangGraph retrieval agent with page summarization support"""
     
     workflow = StateGraph(AgentState)
@@ -1225,13 +1214,7 @@ Examples:
     document_graph.load(graph_file)
     
     vector_store = load_vector_store(vector_db_path)
-    
-    # Initialize LLM
-    llm = Ollama(
-        model=LLM_MODEL,
-        base_url=OLLAMA_BASE_URL,
-        temperature=0.3
-    )
+    llm = get_llm(temperature=0.3)
     
     logger.info("=" * 80)
     logger.info("Data loaded successfully!")

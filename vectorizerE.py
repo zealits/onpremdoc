@@ -2,7 +2,7 @@
 VectorizerE - Plan E Implementation: Graph-Based Document Structure
 Converts markdown documents to vector embeddings with knowledge graph structure.
 Uses graph traversal for enhanced retrieval that captures document relationships.
-Uses Ollama for embeddings (nomic-embed-text:v1.5) and LLM (llama3.1:8b).
+Uses inference_config for embeddings and LLM (Ollama or Hugging Face).
 """
 
 import json
@@ -11,8 +11,6 @@ import sys
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 import re
-import urllib.request
-import urllib.error
 from collections import defaultdict
 from dataclasses import dataclass, field
 
@@ -25,8 +23,6 @@ except ImportError:
     logging.warning("networkx not available. Install with: pip install networkx")
 
 # LangChain imports
-from langchain_community.embeddings import OllamaEmbeddings
-from langchain_ollama import OllamaLLM as Ollama
 from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
 from langgraph.graph import StateGraph, END
@@ -52,10 +48,14 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("langchain").setLevel(logging.WARNING)
 logging.getLogger("langchain_community").setLevel(logging.WARNING)
 
-# ---------------- CONFIGURATION ---------------- 
-EMBEDDING_MODEL = "nomic-embed-text:v1.5"
-LLM_MODEL = "llama3.1:8b"
-OLLAMA_BASE_URL = "http://localhost:11434"
+# Inference provider (Ollama or Hugging Face)
+from config.inference_config import (
+    get_embeddings,
+    get_llm,
+    check_inference_ready,
+    get_embedding_model_id,
+    get_llm_model_id,
+)
 
 # Token limits
 EMBEDDING_MAX_TOKENS = 1500
@@ -835,8 +835,8 @@ def create_enhanced_chunk(
     
     return Document(page_content=text, metadata=metadata)
 
-# ---------------- OLLAMA INTEGRATION ---------------- 
-def classify_page_with_llm(page_content: str, llm: Ollama) -> str:
+# ---------------- LLM INTEGRATION ---------------- 
+def classify_page_with_llm(page_content: str, llm: Any) -> str:
     """Classify a page using LLM based on its content - LLM generates its own label"""
     # Truncate to reasonable size for classification
     text_for_classification, _ = token_tracker.check_llm_limit(page_content[:3000], max_tokens=1000)
@@ -855,7 +855,8 @@ Page content:
     
     try:
         response = llm.invoke(prompt)
-        classification = response.strip()
+        response_text = (getattr(response, "content", None) or str(response)).strip()
+        classification = response_text
         
         # Clean up the response
         classification = classification.split("\n")[0].strip()
@@ -889,7 +890,7 @@ Page content:
         logger.warning(f"Error classifying page: {e}")
         return "Unknown"
 
-def classify_pages(chunks: List[Document], page_mapping: Optional[Dict[str, Any]], llm: Ollama) -> Dict[int, str]:
+def classify_pages(chunks: List[Document], page_mapping: Optional[Dict[str, Any]], llm: Any) -> Dict[int, str]:
     """Classify all pages based on their chunk content"""
     if not page_mapping:
         logger.warning("No page mapping available, skipping page classification")
@@ -1019,18 +1020,10 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
     json_output_path = plan_e_dir / f"{doc_stem}_vector_mapping.json"
     graph_output_path = plan_e_dir / f"{doc_stem}_document_graph.json"
     
-    # Initialize LLM and embeddings
-    logger.info("Initializing Ollama LLM and embeddings...")
-    llm = Ollama(
-        model=LLM_MODEL,
-        base_url=OLLAMA_BASE_URL,
-        temperature=0.3
-    )
-    
-    embeddings = OllamaEmbeddings(
-        model=EMBEDDING_MODEL,
-        base_url=OLLAMA_BASE_URL
-    )
+    # Initialize LLM and embeddings via inference_config (Ollama or Hugging Face)
+    logger.info("Initializing LLM and embeddings...")
+    llm = get_llm(temperature=0.3)
+    embeddings = get_embeddings()
     
     # Initialize vector store
     vector_store = Chroma(
@@ -1239,13 +1232,13 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
         try:
             vector_store.add_documents([doc])
         except Exception as e:
-            logger.error(f"Failed to add chunk {vector_number}: {e}")
+            logger.error("Failed to add chunk %s: %s", vector_number, e)
             content = content[:int(EMBEDDING_MAX_CHARS * 0.5)] + "..."
             doc.page_content = content
             try:
                 vector_store.add_documents([doc])
             except Exception as e2:
-                logger.error(f"Still failed, skipping chunk {vector_number}")
+                logger.error("Still failed, skipping chunk %s: %s", vector_number, e2)
                 continue
         
         # Add chunk node to graph
@@ -1296,15 +1289,15 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
         processed_chunks.append(chunk_detail)
         token_tracker.stats["total_chunks"] += 1
     
-    # Compute similarity edges between chunks
+    # Compute similarity edges between chunks (rank-based: top-K per chunk, embedding-model agnostic)
     logger.info("Computing similarity edges between chunks...")
-    similarity_threshold = 0.50  # Similarity threshold for L2 distance (higher = more similar)
-    max_similar_per_chunk = 5  # Maximum similar chunks to connect per chunk
+    max_similar_per_chunk = 5  # Connect each chunk to its K nearest neighbors (by distance)
+    min_similarity_for_edge = 0.5  # Only add edge if relative similarity > this (avoid weak/0.00 links)
     
     similarity_edges_added = 0
     all_chunk_ids = sorted(document_graph.chunk_nodes.keys())
     
-    # Debug: Track distance ranges
+    # Debug: track distance ranges across chunks (for logging only)
     distance_samples = []
     
     for i, chunk_id in enumerate(all_chunk_ids):
@@ -1345,136 +1338,80 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
             if i < 3:  # Debug for first few
                 logger.info(f"  Chunk {chunk_id}: Found {len(similar_results)} search results")
             
-            similar_count = 0
+            # Collect valid candidates: (chunk_id, distance, node); skip self, None, not in graph
             skipped_same = 0
             skipped_none = 0
             skipped_not_in_graph = 0
-            
+            candidates = []
             for similar_doc, distance_score in similar_results:
                 similar_chunk_id = similar_doc.metadata.get("chunk_index")
-                
-                # Debug for first chunk
-                if i == 0 and similar_count < 5:
-                    logger.info(f"    Result: chunk_id={similar_chunk_id}, distance={distance_score:.4f}, metadata={similar_doc.metadata.get('chunk_index')}")
-                
-                # Skip if same chunk, invalid ID, or already connected
                 if similar_chunk_id is None:
                     skipped_none += 1
-                    if i < 2:
-                        logger.info(f"    Skipped: chunk_id is None")
                     continue
                 if similar_chunk_id == chunk_id:
                     skipped_same += 1
                     continue
                 if similar_chunk_id not in document_graph.chunk_nodes:
                     skipped_not_in_graph += 1
-                    if i < 2:
-                        logger.info(f"    Skipped: chunk {similar_chunk_id} not in graph (graph has {len(document_graph.chunk_nodes)} chunks)")
                     continue
-                
-                # Convert distance to similarity
-                # Chroma is returning L2/Euclidean distance (not cosine distance!)
-                # L2 distance can be any positive number, where:
-                # - 0 = identical
-                # - Lower values = more similar
-                # - Higher values = less similar
-                # 
-                # For L2 distance, we need to convert to similarity using:
-                # similarity = 1 / (1 + normalized_distance)
-                # or exponential decay: similarity = exp(-distance/scale)
-                
-                # First, normalize the distance by finding a reasonable scale
-                # Based on the debug output, distances are typically 200-400 range
-                # For identical chunks, distance should be close to 0
-                # For very different chunks, distance can be 300-400+
-                
-                # Use inverse relationship with normalization
-                # Scale factor: use a value that makes sense for the distance range
-                # If distance is 0, similarity should be 1.0
-                # If distance is ~300 (typical), similarity should be low
-                # If distance is ~100 (very similar), similarity should be higher
-                
-                # Method 1: Inverse with scale (works well for L2 distance)
-                # Scale of 150 means: 
-                #   distance 0 -> similarity 1.0 (identical)
-                #   distance 100 -> similarity 0.6 (very similar)
-                #   distance 200 -> similarity 0.57 (similar)
-                #   distance 300 -> similarity 0.5 (moderately similar)
-                #   distance 400 -> similarity 0.43 (less similar)
-                scale_factor = 150.0
-                similarity = 1.0 / (1.0 + (distance_score / scale_factor))
-                
-                # Clamp to [0, 1] range
+                similar_node = document_graph.chunk_nodes.get(similar_chunk_id)
+                if similar_node:
+                    candidates.append((similar_chunk_id, distance_score, similar_node))
+            
+            # Rank-based: take top max_similar_per_chunk by distance (lowest = most similar)
+            candidates.sort(key=lambda x: x[1])
+            top = candidates[:max_similar_per_chunk]
+            
+            if i < 3:
+                logger.info(f"  Chunk {chunk_id}: {len(similar_results)} results, skipped: same={skipped_same}, none={skipped_none}, not_in_graph={skipped_not_in_graph}, top-K={len(top)}")
+            
+            # Relative similarity for edge weight: 1.0 = nearest, 0.0 = farthest in this top-K (embedding-model agnostic)
+            d_min = top[0][1] if top else 0.0
+            d_max = top[-1][1] if top else 0.0
+            span = (d_max - d_min) + 1e-9
+            
+            for rank, (similar_chunk_id, distance_score, similar_node) in enumerate(top):
+                # Relative similarity in [0, 1]: best=1.0, worst in top-K=0.0
+                similarity = 1.0 - (distance_score - d_min) / span
                 similarity = max(0.0, min(1.0, similarity))
                 
-                # Debug for first chunk
-                if i == 0 and similar_count < 3:
-                    logger.info(f"    Distance={distance_score:.4f} -> Similarity={similarity:.4f} (threshold={similarity_threshold})")
-                
-                # Clamp similarity to [0, 1] range
-                similarity = max(0.0, min(1.0, similarity))
-                
-                # Collect distance samples for debugging
                 if len(distance_samples) < 20:
                     distance_samples.append((distance_score, similarity))
+                if i < 3 and rank < 2:
+                    logger.info(f"  Chunk {chunk_id} -> {similar_chunk_id}: distance={distance_score:.4f}, rel_similarity={similarity:.4f} (rank {rank+1}/{len(top)})")
                 
-                # Debug logging for first few chunks
-                if i < 3 and similar_count < 2:
-                    logger.info(f"  Chunk {chunk_id} -> {similar_chunk_id}: distance={distance_score:.4f}, similarity={similarity:.4f}, threshold={similarity_threshold}")
+                # Only add edge if relative similarity is above minimum (skip 0.00 or weak links)
+                if similarity <= min_similarity_for_edge:
+                    continue
+                # Skip if already connected via "follows"
+                existing_edge_1 = document_graph.graph.get_edge_data(chunk_node, similar_node)
+                existing_edge_2 = document_graph.graph.get_edge_data(similar_node, chunk_node)
+                has_follows = (existing_edge_1 and existing_edge_1.get("relation") == "follows") or \
+                              (existing_edge_2 and existing_edge_2.get("relation") == "follows")
+                if has_follows:
+                    continue
+                if (existing_edge_1 and existing_edge_1.get("relation") == "similar_to") or \
+                   (existing_edge_2 and existing_edge_2.get("relation") == "similar_to"):
+                    continue
                 
-                # Only add if similarity is above threshold
-                if similarity >= similarity_threshold:
-                    similar_node = document_graph.chunk_nodes.get(similar_chunk_id)
-                    if similar_node:
-                        # Check if "follows" edge already exists (don't add similarity if chunks are adjacent)
-                        existing_edge_1 = document_graph.graph.get_edge_data(chunk_node, similar_node)
-                        existing_edge_2 = document_graph.graph.get_edge_data(similar_node, chunk_node)
-                        
-                        # Skip if "follows" edge exists in either direction
-                        has_follows_edge = False
-                        if existing_edge_1 and existing_edge_1.get("relation") == "follows":
-                            has_follows_edge = True
-                        if existing_edge_2 and existing_edge_2.get("relation") == "follows":
-                            has_follows_edge = True
-                        
-                        if has_follows_edge:
-                            if i < 3:
-                                logger.debug(f"    Skipping similarity edge {chunk_id} <-> {similar_chunk_id}: already connected via 'follows'")
-                            continue
-                        
-                        # Check if similarity edge already exists (bidirectional check)
-                        if (existing_edge_1 and existing_edge_1.get("relation") == "similar_to") or \
-                           (existing_edge_2 and existing_edge_2.get("relation") == "similar_to"):
-                            continue  # Edge already exists
-                        
-                        # Add bidirectional similarity edge
-                        document_graph.add_edge(
-                            chunk_node, 
-                            similar_node, 
-                            relation="similar_to",
-                            similarity=similarity
-                        )
-                        similarity_edges_added += 1
-                        similar_count += 1
-                        
-                        if similar_count >= max_similar_per_chunk:
-                            break
-            
-            # Debug summary for first few chunks
-            if i < 3:
-                logger.info(f"  Chunk {chunk_id} summary: {len(similar_results)} results, skipped: same={skipped_same}, none={skipped_none}, not_in_graph={skipped_not_in_graph}, added={similar_count}")
+                document_graph.add_edge(
+                    chunk_node,
+                    similar_node,
+                    relation="similar_to",
+                    similarity=similarity
+                )
+                similarity_edges_added += 1
                 
         except Exception as e:
             logger.warning(f"Error computing similarity for chunk {chunk_id}: {e}", exc_info=True)
             continue
     
-    # Log distance statistics for debugging
+    # Log distance statistics for debugging (sample across chunks; scale is embedding-model dependent)
     if distance_samples:
         distances = [d[0] for d in distance_samples]
-        similarities = [d[1] for d in distance_samples]
-        logger.info(f"Distance sample stats: min={min(distances):.4f}, max={max(distances):.4f}, avg={sum(distances)/len(distances):.4f}")
-        logger.info(f"Similarity sample stats: min={min(similarities):.4f}, max={max(similarities):.4f}, avg={sum(similarities)/len(similarities):.4f}")
-        logger.info(f"Threshold: {similarity_threshold}, Edges above threshold: {sum(1 for s in similarities if s >= similarity_threshold)}")
+        rel_sims = [d[1] for d in distance_samples]
+        logger.info(f"Distance sample (model-dependent): min={min(distances):.4f}, max={max(distances):.4f}, avg={sum(distances)/len(distances):.4f}")
+        logger.info(f"Relative similarity (rank-based): min={min(rel_sims):.4f}, max={max(rel_sims):.4f}, avg={sum(rel_sims)/len(rel_sims):.4f}")
     
     logger.info(f"Added {similarity_edges_added} similarity edges between chunks")
     
@@ -1529,43 +1466,20 @@ def create_vectorization_workflow() -> StateGraph:
     
     return workflow.compile()
 
-# ---------------- HELPER FUNCTIONS ---------------- 
-def check_ollama_running() -> Tuple[bool, List[str]]:
-    """Check if Ollama server is running"""
-    try:
-        try:
-            req = urllib.request.Request(f"{OLLAMA_BASE_URL}/api/tags")
-            response = urllib.request.urlopen(req, timeout=5)
-            data = json.loads(response.read().decode())
-            models = [model.get('name', '') for model in data.get('models', [])]
-            return True, models
-        except urllib.error.URLError:
-            try:
-                req = urllib.request.Request("http://127.0.0.1:11434/api/tags")
-                response = urllib.request.urlopen(req, timeout=5)
-                data = json.loads(response.read().decode())
-                models = [model.get('name', '') for model in data.get('models', [])]
-                return True, models
-            except:
-                return False, []
-    except Exception as e:
-        logger.debug(f"Ollama check error: {e}")
-        return False, []
 # ---------------- MAIN FUNCTION ---------------- 
 def main():
     """Main entry point"""
-    logger.info("Checking Ollama server connection...")
-    is_running, available_models = check_ollama_running()
+    logger.info("Checking inference backend...")
+    is_running, available_models = check_inference_ready()
     if not is_running:
         logger.error("=" * 60)
-        logger.error("Ollama server is not running!")
+        logger.error("Inference backend is not ready!")
         logger.error("=" * 60)
-        logger.error("Please start Ollama server:")
-        logger.error("  1. Open a new terminal")
-        logger.error("  2. Run: ollama serve")
+        logger.error("For Ollama: start with 'ollama serve' and pull models.")
+        logger.error("For Hugging Face: set HUGGINGFACEHUB_API_TOKEN and INFERENCE_PROVIDER=huggingface")
         logger.error("=" * 60)
         sys.exit(1)
-    logger.info("✓ Ollama server is running")
+    logger.info("✓ Inference backend is ready: %s", available_models[:3] if len(available_models) > 3 else available_models)
     
     if TIKTOKEN_AVAILABLE:
         logger.info("✓ Token tracking enabled with tiktoken")
@@ -1614,8 +1528,8 @@ def main():
     logger.info("VectorizerE - Plan E: Graph-Based Document Structure")
     logger.info("=" * 60)
     logger.info(f"Root folder: {root_folder}")
-    logger.info(f"Embedding model: {EMBEDDING_MODEL}")
-    logger.info(f"LLM model: {LLM_MODEL}")
+    logger.info(f"Embedding model: {get_embedding_model_id()}")
+    logger.info(f"LLM model: {get_llm_model_id()}")
     logger.info(f"Token tracking: {'Enabled' if TIKTOKEN_AVAILABLE else 'Fallback'}")
     logger.info("=" * 60)
 

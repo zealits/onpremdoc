@@ -3,3 +3,4 @@ output
 lib
 oldpdfs
 ./frontend/node_modules
+.env

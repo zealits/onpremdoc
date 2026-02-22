@@ -11,18 +11,14 @@ from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 
 from langchain_core.documents import Document
-from langchain_ollama import OllamaLLM as Ollama
 
+from config.inference_config import get_llm
 from retrivalAgentE import (
     DocumentGraph,
     load_chunks_from_mapping,
     find_vector_mapping_file,
     find_graph_file,
 )
-
-# Configuration
-LLM_MODEL = "llama3.1:8b"
-OLLAMA_BASE_URL = "http://localhost:11434"
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -51,7 +47,7 @@ class PageSummary:
 class PageSummarizationAgent:
     """Agent for generating page-level summaries"""
     
-    def __init__(self, document_graph: DocumentGraph, chunks: List[Document], llm: Ollama):
+    def __init__(self, document_graph: DocumentGraph, chunks: List[Document], llm: Any):
         self.document_graph = document_graph
         self.chunks = chunks
         self.llm = llm
@@ -231,7 +227,7 @@ Now provide the summary and key points:"""
         
         try:
             response = self.llm.invoke(prompt)
-            response_text = response.strip()
+            response_text = (getattr(response, "content", None) or str(response)).strip()
             
             # Parse response
             summary = ""
@@ -292,8 +288,8 @@ Now provide the summary and key points:"""
             return fallback_summary, key_points
 
 
-def load_page_agent(document_folder: Path) -> Optional[PageSummarizationAgent]:
-    """Load page summarization agent for a document"""
+def load_page_agent(document_folder: Path, llm: Any = None) -> Optional[PageSummarizationAgent]:
+    """Load page summarization agent for a document. Uses provided llm or get_llm() from inference_config."""
     plan_e_dir = document_folder / "E"
     
     if not plan_e_dir.exists():
@@ -321,12 +317,8 @@ def load_page_agent(document_folder: Path) -> Optional[PageSummarizationAgent]:
     document_graph = DocumentGraph()
     document_graph.load(graph_file)
     
-    # Initialize LLM
-    llm = Ollama(
-        model=LLM_MODEL,
-        base_url=OLLAMA_BASE_URL,
-        temperature=0.3
-    )
+    if llm is None:
+        llm = get_llm(temperature=0.3)
     
     return PageSummarizationAgent(document_graph, chunks, llm)
 
