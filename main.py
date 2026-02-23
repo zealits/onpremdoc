@@ -29,44 +29,15 @@ from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, Field
 
 # Import modules
-from detection import process_single_pdf, extract_page_mapping_from_markdown
-from config.inference_config import check_inference_ready, get_llm
-from vectorizerE import (
-    create_vectorization_workflow,
-    VectorizerState,
-    DocumentGraph,
-)
-from retrivalAgentE import (
-    create_retrieval_agent,
-    set_agent_resources,
-    load_chunks_from_mapping,
-    load_vector_store,
-    find_vector_mapping_file,
-    find_graph_file,
-    find_vector_db_path,
-    DocumentGraph as RetrievalDocumentGraph,
-    AgentState,
-)
+from config.inference_config import check_inference_ready
 from visualizeGraphE import (
     load_graph,
     visualize_interactive,
     visualize_static,
     visualize_simplified,
-    print_graph_stats,
     find_graph_file as find_viz_graph_file,
 )
-from page_summarization import (
-    load_page_agent,
-    PageSummarizationAgent,
-)
-from economics_tracker import (
-    log_upload,
-    log_pdf_processing,
-    log_vectorization,
-    log_query_usage,
-    log_page_summary,
-    get_usage_summary,
-)
+from economics_tracker import log_upload, get_usage_summary
 
 # Configure logging
 logging.basicConfig(
@@ -75,14 +46,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Configuration
-OUTPUT_DIR = Path("output")
-UPLOAD_DIR = Path("uploads")
+# Configuration - use service layer for paths and document ops
+from services import document_service
+
+OUTPUT_DIR = document_service.OUTPUT_DIR
+UPLOAD_DIR = document_service.UPLOAD_DIR
 UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
-
-# Global state for loaded agents (document_id -> agent resources)
-_loaded_agents: Dict[str, Dict[str, Any]] = {}
 
 # ---------------- PYDANTIC MODELS ----------------
 
@@ -288,198 +258,26 @@ app.add_middleware(
 )
 
 
-# ---------------- HELPER FUNCTIONS ----------------
+# ---------------- HELPER FUNCTIONS (delegate to service) ----------------
 
 
 def get_document_path(document_id: str) -> Path:
     """Get document output directory"""
-    return OUTPUT_DIR / document_id
+    return document_service.get_document_path(document_id)
 
 
 def get_document_info(document_id: str) -> Optional[DocumentInfo]:
     """Get document information"""
-    doc_path = get_document_path(document_id)
-    if not doc_path.exists():
-        return None
-    
-    # Find markdown file
-    md_files = list(doc_path.glob("*.md"))
-    md_path = md_files[0] if md_files else None
-    
-    # Find page mapping
-    page_mapping_path = None
-    if md_path:
-        page_mapping_path = doc_path / f"{md_path.stem}_page_mapping.json"
-        if not page_mapping_path.exists():
-            page_mapping_path = None
-
-    # Find confidence report
-    confidence_path = None
-    layout_score = ocr_score = parse_score = table_score = None
-    mean_grade = low_grade = None
-
-    if md_path:
-        potential_conf_path = doc_path / f"{md_path.stem}_confidence.json"
-        if potential_conf_path.exists():
-            confidence_path = potential_conf_path
-            try:
-                with open(confidence_path, "r", encoding="utf-8") as f:
-                    confidence_data = json.load(f)
-                layout_score = confidence_data.get("layout_score")
-                ocr_score = confidence_data.get("ocr_score")
-                parse_score = confidence_data.get("parse_score")
-                table_score = confidence_data.get("table_score")
-                mean_grade = confidence_data.get("mean_grade")
-                low_grade = confidence_data.get("low_grade")
-            except Exception:
-                # If anything goes wrong, just skip confidence summary
-                confidence_path = None
-    
-    # Check Plan E folder
-    plan_e_dir = doc_path / "E"
-    vector_mapping_path = None
-    graph_path = None
-    vector_db_path = None
-    total_chunks = None
-    graph_nodes = None
-    graph_edges = None
-    
-    if plan_e_dir.exists():
-        # Find vector mapping
-        mapping_file = find_vector_mapping_file(plan_e_dir)
-        if mapping_file:
-            vector_mapping_path = str(mapping_file)
-            # Count chunks
-            try:
-                with open(mapping_file, 'r', encoding='utf-8') as f:
-                    mapping_data = json.load(f)
-                    total_chunks = len(mapping_data)
-            except:
-                pass
-        
-        # Find graph
-        graph_file = find_graph_file(plan_e_dir)
-        if graph_file:
-            graph_path = str(graph_file)
-            # Count nodes/edges
-            try:
-                with open(graph_file, 'r', encoding='utf-8') as f:
-                    graph_data = json.load(f)
-                    graph_nodes = len(graph_data.get("nodes", []))
-                    graph_edges = len(graph_data.get("edges", []))
-            except:
-                pass
-        
-        # Find vector DB
-        vector_db = find_vector_db_path(plan_e_dir)
-        if vector_db:
-            vector_db_path = str(vector_db)
-    
-    # Determine status
-    status = "uploaded"
-    if md_path:
-        status = "processing"
-    if vector_mapping_path and graph_path:
-        status = "vectorized"
-    if vector_mapping_path and graph_path and vector_db_path:
-        status = "ready"
-    
-    # Get total pages
-    total_pages = None
-    if page_mapping_path:
-        try:
-            with open(page_mapping_path, 'r', encoding='utf-8') as f:
-                page_data = json.load(f)
-                total_pages = page_data.get("total_pages")
-        except:
-            pass
-    
-    return DocumentInfo(
-        document_id=document_id,
-        name=doc_path.name,
-        status=status,
-        markdown_path=str(md_path) if md_path else None,
-        page_mapping_path=str(page_mapping_path) if page_mapping_path else None,
-        vector_mapping_path=vector_mapping_path,
-        graph_path=graph_path,
-        vector_db_path=vector_db_path,
-        confidence_path=str(confidence_path) if confidence_path else None,
-        total_pages=total_pages,
-        total_chunks=total_chunks,
-        layout_score=layout_score,
-        ocr_score=ocr_score,
-        parse_score=parse_score,
-        table_score=table_score,
-        mean_grade=mean_grade,
-        low_grade=low_grade,
-    )
+    info = document_service.get_document_info(document_id)
+    return DocumentInfo(**info) if info else None
 
 
 def load_agent_for_document(document_id: str) -> Dict[str, Any]:
-    """Load agent resources for a document"""
-    if document_id in _loaded_agents:
-        return _loaded_agents[document_id]
-    
-    doc_path = get_document_path(document_id)
-    plan_e_dir = doc_path / "E"
-    
-    if not plan_e_dir.exists():
-        raise HTTPException(
-            status_code=404,
-            detail=f"Document {document_id} not vectorized. Run vectorization first."
-        )
-    
-    # Find required files
-    vector_mapping_file = find_vector_mapping_file(plan_e_dir)
-    graph_file = find_graph_file(plan_e_dir)
-    vector_db_path = find_vector_db_path(plan_e_dir)
-    
-    if not vector_mapping_file or not vector_mapping_file.exists():
-        raise HTTPException(
-            status_code=404,
-            detail="Vector mapping file not found"
-        )
-    
-    if not graph_file or not graph_file.exists():
-        raise HTTPException(
-            status_code=404,
-            detail="Graph file not found"
-        )
-    
-    if not vector_db_path or not vector_db_path.exists():
-        raise HTTPException(
-            status_code=404,
-            detail="Vector database not found"
-        )
-    
-    # Load resources
-    from retrivalAgentE import (
-        load_chunks_from_mapping,
-        load_vector_store,
-    )
-    
-    chunks = load_chunks_from_mapping(vector_mapping_file)
-    document_graph = RetrievalDocumentGraph()
-    document_graph.load(graph_file)
-    vector_store = load_vector_store(vector_db_path)
-    llm = get_llm(temperature=0.3)
-    
-    # Create agent (pass document folder for page summarization)
-    agent = create_retrieval_agent(vector_store, document_graph, chunks, llm, doc_path)
-    
-    # Set global resources (pass document folder for page summarization)
-    set_agent_resources(vector_store, document_graph, chunks, llm, doc_path)
-    
-    # Cache
-    _loaded_agents[document_id] = {
-        "agent": agent,
-        "vector_store": vector_store,
-        "document_graph": document_graph,
-        "chunks": chunks,
-        "llm": llm,
-    }
-    
-    return _loaded_agents[document_id]
+    """Load agent resources for a document. Raises HTTPException if not vectorized."""
+    try:
+        return document_service.load_agent_for_document(document_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 # ---------------- API ENDPOINTS ----------------
@@ -543,23 +341,10 @@ async def get_document(document_id: str = PathParam(..., description="Document I
 @app.get("/documents/{document_id}/markdown", tags=["Documents"])
 async def get_markdown(document_id: str = PathParam(..., description="Document ID")):
     """Get markdown content for a document"""
-    doc_info = get_document_info(document_id)
-    if not doc_info or not doc_info.markdown_path:
-        raise HTTPException(
-            status_code=404,
-            detail="Markdown file not found"
-        )
-    
-    markdown_path = Path(doc_info.markdown_path)
-    if not markdown_path.exists():
-        raise HTTPException(
-            status_code=404,
-            detail="Markdown file not found"
-        )
-    
-    with open(markdown_path, 'r', encoding='utf-8') as f:
-        content = f.read()
-    
+    try:
+        content = document_service.get_document_markdown(document_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     from fastapi.responses import Response
     return Response(content=content, media_type="text/plain")
 
@@ -659,30 +444,13 @@ async def upload_pdf(
 
 
 def process_pdf_background(pdf_path: str, document_id: str):
-    """Background task to process PDF"""
-    pdf_file = Path(pdf_path)
-    doc_path = get_document_path(document_id)
-    
+    """Background task to process PDF (file already saved in document folder)"""
     try:
         logger.info(f"Processing PDF: {pdf_path} for document {document_id}")
-        
-        # Process PDF directly in the document_id folder - no temporary folder needed
-        process_single_pdf(pdf_file, OUTPUT_DIR, target_dir=doc_path)
-        
-        # Economics: log PDF processing step (page count from page mapping if available)
-        total_pages = None
-        md_files = list(doc_path.glob("*.md"))
-        if md_files:
-            pm_path = doc_path / f"{md_files[0].stem}_page_mapping.json"
-            if pm_path.exists():
-                try:
-                    with open(pm_path, "r", encoding="utf-8") as f:
-                        total_pages = json.load(f).get("total_pages")
-                except Exception:
-                    pass
-        log_pdf_processing(document_id, total_pages=total_pages)
-        
+        document_service.run_detection_for_document(document_id)
         logger.info(f"PDF processing complete for document {document_id}")
+    except ValueError as e:
+        logger.error(f"Error processing PDF {document_id}: {e}", exc_info=True)
     except Exception as e:
         logger.error(f"Error processing PDF {pdf_path}: {e}", exc_info=True)
 
@@ -724,66 +492,14 @@ def vectorize_background(document_id: str):
         logger.info(f"{'='*80}")
         logger.info(f"🚀 Starting vectorization for document: {document_id}")
         logger.info(f"{'='*80}")
-        
+        document_service.trigger_vectorize(document_id)
         doc_path = get_document_path(document_id)
-        logger.info(f"📁 Document path: {doc_path}")
-        
-        # Check if markdown exists
-        md_files = list(doc_path.glob("*.md"))
-        if not md_files:
-            logger.error(f"❌ No markdown file found in {doc_path}")
-            logger.error(f"   Please ensure PDF processing completed successfully")
-            return
-        
-        logger.info(f"✅ Found markdown file: {md_files[0].name}")
-        
-        # Create workflow state
-        initial_state: VectorizerState = {
-            "markdown_file": str(doc_path),
-            "chunks": [],
-            "structure": {},
-            "processed_chunks": [],
-            "vector_store": None,
-            "document_graph": DocumentGraph(),
-            "json_mapping": [],
-            "page_mapping": None,
-            "page_classifications": None,
-            "output_folder": str(doc_path),
-            "token_usage": None,
-        }
-        
-        logger.info(f"📊 Creating vectorization workflow...")
-        
-        # Run workflow
-        workflow = create_vectorization_workflow()
-        logger.info(f"⚙️  Running vectorization workflow...")
-        logger.info(f"   This may take several minutes depending on document size...")
-        
-        final_state = workflow.invoke(initial_state)
-        
-        # Economics: persist vectorization token usage for stakeholder reporting
-        usage = final_state.get("token_usage")
-        if usage:
-            log_vectorization(
-                document_id,
-                embedding_tokens=usage.get("embedding_tokens", 0),
-                llm_tokens=usage.get("llm_tokens", 0),
-                total_chunks=usage.get("total_chunks", 0),
-                truncated_chunks=usage.get("truncated_chunks", 0),
-            )
-        
-        # Log results
-        total_chunks = len(final_state.get("json_mapping", []))
-        graph_nodes = len(final_state.get("document_graph", DocumentGraph()).graph.nodes)
-        graph_edges = len(final_state.get("document_graph", DocumentGraph()).graph.edges)
-        
         logger.info(f"{'='*80}")
         logger.info(f"✅ Vectorization complete for document {document_id}")
-        logger.info(f"   📦 Total chunks: {total_chunks}")
-        logger.info(f"   🔗 Graph nodes: {graph_nodes}")
-        logger.info(f"   🔗 Graph edges: {graph_edges}")
         logger.info(f"   📂 Output directory: {doc_path / 'E'}")
         logger.info(f"{'='*80}")
+    except ValueError as e:
+        logger.error(f"❌ Vectorization failed for document {document_id}: {e}")
     except Exception as e:
         logger.error(f"{'='*80}")
         logger.error(f"❌ Error vectorizing document {document_id}: {e}")
@@ -809,200 +525,49 @@ async def economics_summary(date: Optional[str] = Query(None, description="Date 
 @app.post("/query", response_model=QueryResponse, tags=["Retrieval"])
 async def query_document(request: QueryRequest):
     """Query a vectorized document using graph-enhanced retrieval"""
-    if not request.query.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="Query cannot be empty"
-        )
-    
-    # Load agent for document
     try:
-        agent_resources = load_agent_for_document(request.document_id)
-        agent = agent_resources["agent"]
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to load agent: {str(e)}"
+        result = document_service.query_document(
+            request.document_id,
+            request.query,
+            include_chunks=request.include_chunks,
         )
-    
-    # Initialize state
-    initial_state: AgentState = {
-        "query": request.query,
-        "is_page_summary": False,
-        "page_number": None,
-        "seed_chunk_ids": [],
-        "seed_chunk_scores": {},
-        "graph_expanded_ids": [],
-        "retrieved_chunks": [],
-        "reranked_chunks": None,
-        "rerank_scores": {},
-        "chunk_analysis": "",
-        "needs_more_info": False,
-        "new_query": None,
-        "second_seed_ids": [],
-        "second_seed_scores": {},
-        "second_expanded_ids": [],
-        "second_retrieval_chunks": [],
-        "final_answer": "",
-        "iteration_count": 0,
-        "document_folder": None,
-        "debug_info": {},
-        "token_usage": [],
-    }
-    
-    # Run agent
-    try:
-        final_state = agent.invoke(initial_state)
-        
-        # Economics: persist query token usage for stakeholder reporting
-        steps = final_state.get("token_usage") or []
-        if steps:
-            log_query_usage(request.document_id, steps)
-        
-        # Build retrieval stats - use scores from state if available
-        seed_chunk_ids = set(final_state.get("seed_chunk_ids", []))
-        graph_expanded_ids = set(final_state.get("graph_expanded_ids", []))
-        second_seed_ids = set(final_state.get("second_seed_ids", []))
-        second_expanded_ids = set(final_state.get("second_expanded_ids", []))
-        
-        # Get similarity scores from state (already calculated during retrieval)
-        seed_chunk_scores = final_state.get("seed_chunk_scores", {})
-        second_seed_scores = final_state.get("second_seed_scores", {})
-        rerank_scores = final_state.get("rerank_scores", {})
-        
-        # Calculate stats
-        reranked_chunks = final_state.get("reranked_chunks")
-        total_initial = len(reranked_chunks) if reranked_chunks else len(final_state.get("retrieved_chunks", []))
-        
-        retrieval_stats = {
-            "seed_chunks": len(seed_chunk_ids),
-            "graph_expanded_chunks": len(graph_expanded_ids),
-            "total_initial_chunks": total_initial,
-            "second_seed_chunks": len(second_seed_ids),
-            "second_expanded_chunks": len(second_expanded_ids),
-            "total_second_chunks": len(final_state.get("second_retrieval_chunks", [])),
-            "total_chunks_used": total_initial + len(final_state.get("second_retrieval_chunks", [])),
-            "iterations": final_state.get("iteration_count", 0),
-            "reranking_applied": reranked_chunks is not None,
-            "reranked_chunks_count": len(reranked_chunks) if reranked_chunks else 0,
-        }
-        
-        if final_state.get("new_query"):
-            retrieval_stats["second_query"] = final_state["new_query"]
-        
-        # Use similarity scores from state (already calculated)
-        seed_score_map = seed_chunk_scores
-        second_seed_score_map = second_seed_scores
-
-        # Extract detailed chunk information
-        chunks_detail = []
-        if request.include_chunks:
-            # Process initial retrieved chunks
-            initial_chunks = final_state.get("retrieved_chunks", [])
-            for chunk in initial_chunks:
-                chunk_id = chunk.metadata.get("chunk_index")
-                if chunk_id is None:
-                    continue
-                
-                # Determine retrieval source
-                if chunk_id in seed_chunk_ids:
-                    source = "seed"
-                elif chunk_id in graph_expanded_ids:
-                    source = "graph_expanded"
-                else:
-                    source = "initial"
-                
-                chunk_detail = ChunkDetail(
-                    chunk_index=chunk_id,
-                    content=chunk.page_content,
-                    heading=chunk.metadata.get("heading", "No heading"),
-                    section_path=chunk.metadata.get("section_path", ""),
-                    section_title=chunk.metadata.get("section_title", ""),
-                    page_number=chunk.metadata.get("page_number") if chunk.metadata.get("page_number") else None,
-                    page_classification=chunk.metadata.get("page_classification") if chunk.metadata.get("page_classification") else None,
-                    summary=chunk.metadata.get("summary", ""),
-                    chunk_type=chunk.metadata.get("chunk_type", "text"),
-                    has_table=chunk.metadata.get("has_table", False),
-                    table_context=chunk.metadata.get("table_context") if chunk.metadata.get("table_context") else None,
-                    start_line=chunk.metadata.get("start_line") if chunk.metadata.get("start_line") else None,
-                    content_length=len(chunk.page_content),
-                    retrieval_source=source,
-                    similarity_score=seed_score_map.get(chunk_id),
-                    rerank_score=rerank_scores.get(chunk_id),
-                )
-                chunks_detail.append(chunk_detail)
-            
-            # Process second retrieval chunks
-            second_chunks = final_state.get("second_retrieval_chunks", [])
-            for chunk in second_chunks:
-                chunk_id = chunk.metadata.get("chunk_index")
-                if chunk_id is None:
-                    continue
-                
-                # Skip if already added (from initial retrieval)
-                if any(c.chunk_index == chunk_id for c in chunks_detail):
-                    continue
-                
-                # Determine retrieval source
-                if chunk_id in second_seed_ids:
-                    source = "second_seed"
-                elif chunk_id in second_expanded_ids:
-                    source = "second_expanded"
-                else:
-                    source = "second_retrieval"
-                
-                chunk_detail = ChunkDetail(
-                    chunk_index=chunk_id,
-                    content=chunk.page_content,
-                    heading=chunk.metadata.get("heading", "No heading"),
-                    section_path=chunk.metadata.get("section_path", ""),
-                    section_title=chunk.metadata.get("section_title", ""),
-                    page_number=chunk.metadata.get("page_number") if chunk.metadata.get("page_number") else None,
-                    page_classification=chunk.metadata.get("page_classification") if chunk.metadata.get("page_classification") else None,
-                    summary=chunk.metadata.get("summary", ""),
-                    chunk_type=chunk.metadata.get("chunk_type", "text"),
-                    has_table=chunk.metadata.get("has_table", False),
-                    table_context=chunk.metadata.get("table_context") if chunk.metadata.get("table_context") else None,
-                    start_line=chunk.metadata.get("start_line") if chunk.metadata.get("start_line") else None,
-                    content_length=len(chunk.page_content),
-                    retrieval_source=source,
-                    similarity_score=second_seed_score_map.get(chunk_id),
-                    rerank_score=rerank_scores.get(chunk_id),  # Second retrieval chunks may also have rerank scores
-                )
-                chunks_detail.append(chunk_detail)
-            
-            # Sort chunks by chunk_index for consistent ordering
-            chunks_detail.sort(key=lambda x: x.chunk_index)
-        
-        # Get debug info from state
-        debug_info = final_state.get("debug_info", {})
-        
-        # Add rerank scores to debug info if available
-        if rerank_scores:
-            debug_info["rerank_scores_summary"] = {
-                "total_reranked": len(rerank_scores),
-                "avg_score": sum(rerank_scores.values()) / len(rerank_scores) if rerank_scores else 0,
-                "max_score": max(rerank_scores.values()) if rerank_scores else 0,
-                "min_score": min(rerank_scores.values()) if rerank_scores else 0,
-            }
-        
-        return QueryResponse(
-            answer=final_state.get("final_answer", "No answer generated"),
-            document_id=request.document_id,
-            query=request.query,
-            retrieval_stats=retrieval_stats,
-            chunk_analysis=final_state.get("chunk_analysis"),
-            chunks=chunks_detail,
-            debug_info=debug_info,
-        )
+    except ValueError as e:
+        raise HTTPException(status_code=400 if "query" in str(e).lower() else 404, detail=str(e))
     except Exception as e:
         logger.error(f"Error during query: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Query failed: {str(e)}"
+        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+    # Build ChunkDetail list from service dicts
+    chunks_detail = [
+        ChunkDetail(
+            chunk_index=c["chunk_index"],
+            content=c["content"],
+            heading=c["heading"],
+            section_path=c["section_path"],
+            section_title=c["section_title"],
+            page_number=c.get("page_number"),
+            page_classification=c.get("page_classification"),
+            summary=c["summary"],
+            chunk_type=c["chunk_type"],
+            has_table=c["has_table"],
+            table_context=c.get("table_context"),
+            start_line=c.get("start_line"),
+            content_length=c["content_length"],
+            retrieval_source=c["retrieval_source"],
+            similarity_score=c.get("similarity_score"),
+            rerank_score=c.get("rerank_score"),
         )
+        for c in result["chunks"]
+    ]
+    return QueryResponse(
+        answer=result["answer"],
+        document_id=result["document_id"],
+        query=result["query"],
+        retrieval_stats=result["retrieval_stats"],
+        chunk_analysis=result.get("chunk_analysis"),
+        chunks=chunks_detail,
+        debug_info=result.get("debug_info") or {},
+    )
 
 
 @app.post("/visualize/{document_id}", tags=["Visualization"])
@@ -1084,86 +649,13 @@ async def visualize_graph(
 @app.get("/visualize/{document_id}/stats", tags=["Visualization"])
 async def get_graph_stats(document_id: str = PathParam(..., description="Document ID")):
     """Get graph statistics"""
-    doc_path = get_document_path(document_id)
-    
-    if not doc_path.exists():
-        raise HTTPException(
-            status_code=404,
-            detail=f"Document {document_id} not found"
-        )
-    
-    plan_e_dir = doc_path / "E"
-    
-    if not plan_e_dir.exists():
-        # Return empty stats instead of 404 - document exists but not vectorized yet
-        return {
-            "total_nodes": 0,
-            "total_edges": 0,
-            "node_types": {},
-            "edge_relations": {},
-            "density": 0.0,
-        }
-    
-    graph_file = find_viz_graph_file(plan_e_dir)
-    if not graph_file or not graph_file.exists():
-        # Return empty stats instead of 404 - vectorization may be in progress
-        return {
-            "total_nodes": 0,
-            "total_edges": 0,
-            "node_types": {},
-            "edge_relations": {},
-            "density": 0.0,
-        }
-    
     try:
-        G = load_graph(graph_file)
-        
-        # Collect stats
-        node_types = {}
-        for node_id in G.nodes():
-            node_type = G.nodes[node_id].get("type", "unknown")
-            node_types[node_type] = node_types.get(node_type, 0) + 1
-        
-        edge_relations = {}
-        for source, target, edge_data in G.edges(data=True):
-            relation = edge_data.get("relation", "unknown")
-            edge_relations[relation] = edge_relations.get(relation, 0) + 1
-        
-        stats = {
-            "total_nodes": len(G.nodes),
-            "total_edges": len(G.edges),
-            "node_types": node_types,
-            "edge_relations": edge_relations,
-            "density": float(nx.density(G)) if len(G.nodes) > 0 else 0.0,
-        }
-        
-        # Similarity edge stats
-        if "similar_to" in edge_relations:
-            similarity_edges = [
-                (u, v, d) for u, v, d in G.edges(data=True)
-                if d.get("relation") == "similar_to"
-            ]
-            if similarity_edges:
-                similarities = [
-                    d.get("similarity", 0.0)
-                    for u, v, d in similarity_edges
-                    if d.get("similarity")
-                ]
-                if similarities:
-                    stats["similarity_stats"] = {
-                        "count": len(similarities),
-                        "average": float(sum(similarities) / len(similarities)),
-                        "min": float(min(similarities)),
-                        "max": float(max(similarities)),
-                    }
-        
-        return stats
+        return document_service.get_graph_stats(document_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.error(f"Error getting graph stats: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to get stats: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/page/{document_id}/summarize", response_model=PageSummaryResponse, tags=["Page Analysis"])
@@ -1172,67 +664,25 @@ async def summarize_page(
     page_number: int = Query(..., description="Page number to summarize", gt=0),
 ):
     """Generate comprehensive page-level summary and explanation"""
-    doc_path = get_document_path(document_id)
-    
-    if not doc_path.exists():
-        raise HTTPException(
-            status_code=404,
-            detail=f"Document {document_id} not found"
-        )
-    
-    plan_e_dir = doc_path / "E"
-    if not plan_e_dir.exists():
-        raise HTTPException(
-            status_code=404,
-            detail="Document not vectorized. Run vectorization first."
-        )
-    
     try:
-        # Load page summarization agent
-        agent = load_page_agent(doc_path)
-        if not agent:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to load page summarization agent"
-            )
-        
-        # Generate summary
-        summary_result = agent.summarize_page(page_number, use_adjacent_if_empty=True)
-        
-        # Economics: log page summarization token usage (estimated from content + summary length)
-        chunks_used = len(summary_result.chunks_used) if summary_result.chunks_used else 0
-        input_est = (chunks_used * 500 + 500) // 4  # prompt + chunk content
-        output_est = max(1, len(summary_result.summary) // 4)
-        log_page_summary(
-            document_id,
-            page_number,
-            input_tokens_estimate=input_est,
-            output_tokens_estimate=output_est,
-            chunks_used=chunks_used,
-        )
-        
-        # Convert to response model
-        return PageSummaryResponse(
-            page_number=summary_result.page_number,
-            summary=summary_result.summary,
-            key_points=summary_result.key_points,
-            sections=summary_result.sections,
-            has_content=summary_result.has_content,
-            used_adjacent_pages=summary_result.used_adjacent_pages,
-            adjacent_pages_used=summary_result.adjacent_pages_used,
-            page_classification=summary_result.page_classification,
-            chunks_used=summary_result.chunks_used,
-            total_chunks=len(summary_result.chunks_used),
-        )
-        
-    except HTTPException:
-        raise
+        result = document_service.summarize_page(document_id, page_number)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.error(f"Error summarizing page {page_number} for document {document_id}: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to summarize page: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=str(e))
+    return PageSummaryResponse(
+        page_number=result["page_number"],
+        summary=result["summary"],
+        key_points=result["key_points"],
+        sections=result["sections"],
+        has_content=result["has_content"],
+        used_adjacent_pages=result["used_adjacent_pages"],
+        adjacent_pages_used=result.get("adjacent_pages_used"),
+        page_classification=result.get("page_classification"),
+        chunks_used=result["chunks_used"],
+        total_chunks=result["total_chunks"],
+    )
 
 
 # ---------------- ERROR HANDLERS ----------------

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "onpremdoc": {
+      "command": "D:/Projects/DocProcessing/zealits/onpremdoc/.venv/Scripts/python.exe",
+      "args": ["mcp_server.py"],
+      "cwd": "D:/Projects/DocProcessing/zealits/onpremdoc"
+    }
+  }
+}
