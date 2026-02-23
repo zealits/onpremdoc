@@ -12,7 +12,13 @@ import argparse
 import json
 import os
 import sys
+import warnings
 from pathlib import Path
+
+# Prevent deprecation/other warnings from being written to stdout and breaking
+# the MCP stdio JSON-RPC stream (client expects only JSON on the protocol stream).
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", message=".*was deprecated.*")
 
 # Ensure project root is on path
 _project_root = Path(__file__).resolve().parent
@@ -194,6 +200,14 @@ def main() -> None:
         print("In MCP Inspector: choose 'Streamable HTTP' and URL: http://127.0.0.1:%s/mcp" % MCP_HTTP_PORT, file=sys.stderr)
         mcp.run(transport="streamable-http")
     else:
+        # Stdio mode: ensure no logging goes to stdout (reserved for MCP JSON-RPC)
+        import logging
+        for h in logging.root.handlers[:]:
+            logging.root.removeHandler(h)
+        h = logging.StreamHandler(sys.stderr)
+        h.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+        logging.root.addHandler(h)
+        logging.root.setLevel(logging.INFO)
         mcp.run()
 
 
