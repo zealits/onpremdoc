@@ -1,44 +1,39 @@
-# Document Processing Frontend
+# Chat PDF Frontend
 
-Minimalistic React frontend for the Document Processing system.
+React + Vite frontend for the OnPremDoc backend. PDF-only chat UI: upload a PDF, wait for processing and vectorization, then view the PDF and ask questions.
 
 ## Setup
 
-1. Install dependencies:
 ```bash
 npm install
 ```
 
-2. Start the development server:
+## Development
+
+Start the backend (from project root):
+
+```bash
+python -m uvicorn main:app --reload --port 8000
+```
+
+Start the frontend (from `frontend/`):
+
 ```bash
 npm run dev
 ```
 
-The frontend will be available at `http://localhost:3000`
+The app will be at http://localhost:5173. API requests are proxied to http://127.0.0.1:8000 via Vite config.
 
-## Configuration
+To use a different API URL, set `VITE_API_URL` (e.g. in `.env`):
 
-The API base URL defaults to `http://localhost:8000`. You can override this by setting the `VITE_API_BASE_URL` environment variable:
-
-```bash
-VITE_API_BASE_URL=http://localhost:8000 npm run dev
+```
+VITE_API_URL=http://localhost:8000
 ```
 
-## Build for Production
+## Build
 
 ```bash
 npm run build
 ```
 
-The built files will be in the `dist/` directory.
-
-## Features
-
-- **Home Page**: Lists all processed documents with their status
-- **Upload Page**: Upload PDF files and automatically process them (markdown conversion → vectorization)
-- **Chat Interface**: Query processed documents using the agentic chat system
-
-## Requirements
-
-- Node.js 16+ 
-- Backend API running on port 8000 (or configure via `VITE_API_BASE_URL`)
+Output is in `dist/`. Serve it with any static host; set `VITE_API_URL` to your backend URL for production.

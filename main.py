@@ -409,6 +409,23 @@ async def get_confidence(document_id: str = PathParam(..., description="Document
     )
 
 
+@app.get("/documents/{document_id}/pdf", tags=["Documents"])
+async def get_document_pdf(document_id: str = PathParam(..., description="Document ID")):
+    """Serve the original PDF file for the document (for viewer)."""
+    doc_path = get_document_path(document_id)
+    if not doc_path.exists():
+        raise HTTPException(status_code=404, detail=f"Document {document_id} not found")
+    pdf_files = list(doc_path.glob("*.pdf"))
+    if not pdf_files:
+        raise HTTPException(status_code=404, detail=f"No PDF file found for document {document_id}")
+    pdf_path = pdf_files[0]
+    return FileResponse(
+        pdf_path,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{pdf_path.name}"'},
+    )
+
+
 @app.post("/upload", response_model=ProcessPDFResponse, tags=["Documents"])
 async def upload_pdf(
     file: UploadFile = File(..., description="PDF file to upload"),

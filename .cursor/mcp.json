@@ -1,9 +1,9 @@
 {
   "mcpServers": {
     "onpremdoc": {
-      "command": "D:/Projects/DocProcessing/zealits/onpremdoc/.venv/Scripts/python.exe",
+      "command": "C:/Users/9421309441/Desktop/Ongoing Project/onpremdoc/.venv/Scripts/python.exe",
       "args": ["mcp_server.py"],
-      "cwd": "D:/Projects/DocProcessing/zealits/onpremdoc"
+      "cwd": "C:/Users/9421309441/Desktop/Ongoing Project/onpremdoc"
     }
   }
 }
