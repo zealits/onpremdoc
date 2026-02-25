@@ -839,7 +839,8 @@ Content: {content}{relevance_note}
     
     context = "\n".join(chunks_text)
     
-    # Put the question first and repeat before answer so the model always sees it
+    # Put the question first and repeat before answer so the model always sees it.
+    # Instruct the model to return a well-structured, markdown-formatted answer with bold headings.
     answer_prompt = f"""QUESTION (answer this using only the document chunks below):
 {query}
 
@@ -850,7 +851,15 @@ Document chunks (use only this information):
 
 Again, the question to answer is: {query}
 
-Answer (use only the chunks above; no chunk numbers; markdown ok; answer in detail and descriptive way):"""
+Write the answer in CLEAR, WELL-FORMATTED MARKDOWN:
+
+- Start with a one-line **Short Answer**.
+- Then add a **Detailed Explanation** section with 1–3 short paragraphs.
+- Use **bold subheadings** for important parts (for example: **Definition**, **Conditions**, **Exceptions**, **Important Dates**).
+- When listing items, steps, obligations, or conditions, use bullet points.
+- If the document does not state something explicitly, say that clearly (do not invent details).
+
+Answer (use only the chunks above; no chunk numbers):"""
     
     try:
         response = llm.invoke(answer_prompt)

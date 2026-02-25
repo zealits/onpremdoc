@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import ReactMarkdown from 'react-markdown'
 import { useQueryDocument } from '../api/hooks'
 
 const SUGGESTED = [
@@ -86,7 +87,13 @@ export default function ChatPanel({ documentId, documentReady }) {
                   : 'bg-gray-100 text-gray-800'
               }`}
             >
-              {msg.content}
+              {msg.role === 'assistant' ? (
+                <div className="space-y-1">
+                  <ReactMarkdown>{msg.content}</ReactMarkdown>
+                </div>
+              ) : (
+                msg.content
+              )}
             </div>
           </div>
         ))}
