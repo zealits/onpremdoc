@@ -1,7 +1,10 @@
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.datamodel.base_models import InputFormat
-from hierarchical.postprocessor import ResultPostprocessor
+try:
+    from hierarchical.postprocessor import ResultPostprocessor  # from docling-hierarchical-pdf (installed)
+except ImportError:
+    from hierarchical_stub.postprocessor import ResultPostprocessor  # local stub when pkg not installed
 import logging
 import sys
 import re
@@ -279,6 +282,28 @@ def process_markdown(text, preserve_page_breaks: bool = True):
 
     return "\n".join(output)
 
+
+def is_image_only_markdown(markdown: str) -> bool:
+    """
+    Heuristic check to see if markdown contains only image placeholders and page breaks,
+    i.e. no real textual content was extracted (typical for scanned/image-only PDFs
+    when OCR is disabled).
+    """
+    PAGE_BREAK_MARKER = "<!-- page break -->"
+    IMAGE_MARKER = "<!-- image -->"
+
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped in (PAGE_BREAK_MARKER, IMAGE_MARKER):
+            continue
+        # Any other non-empty line means we have some textual content
+        return False
+
+    # We never saw any real text line
+    return True
+
 # ---------------- PAGE MAPPING EXTRACTION ----------------
 def extract_page_mapping_from_markdown(markdown_with_breaks: str) -> Dict[str, Any]:
     """
@@ -462,11 +487,10 @@ def process_single_pdf(pdf_path: Path, base_output_dir: Path, target_dir: Option
 
     logger.info("Initializing Docling converter")
     
-    # Configure Docling to prefer native text extraction and avoid unnecessary OCR
-    # This prevents OCR from being triggered for PDFs that already have selectable text
-    # Setting do_ocr=False disables OCR entirely and uses only native text extraction
+    # First pass: prefer native text extraction and avoid unnecessary OCR.
+    # For most digital PDFs (like policy documents) this is faster and more accurate.
     pipeline_options = PdfPipelineOptions()
-    pipeline_options.do_ocr = False  # Disable OCR - use native text only
+    pipeline_options.do_ocr = False  # First try without OCR
     
     converter = DocumentConverter(
         format_options={
@@ -474,7 +498,7 @@ def process_single_pdf(pdf_path: Path, base_output_dir: Path, target_dir: Option
         }
     )
     
-    logger.info("✓ Configured to use native text extraction (OCR disabled)")
+    logger.info("✓ First pass configured to use native text extraction (OCR disabled)")
 
     logger.info(f"Converting document: {pdf_path.name}")
     doc = converter.convert(str(pdf_path))
@@ -557,54 +581,92 @@ def process_single_pdf(pdf_path: Path, base_output_dir: Path, target_dir: Option
             logger.info("Proceeding with original heading levels...")
 
     # ---------------- EXPORT MARKDOWN WITH PAGE BREAKS ----------------
-    logger.info("Exporting structured Markdown with page break markers")
-
-    # Try method 1: Use page_break_placeholder (docling 2.28.2+)
-    markdown = None
-    page_mapping = None
-
-    try:
-        markdown = doc.document.export_to_markdown(page_break_placeholder="<!-- page break -->")
-        logger.info("✓ Successfully exported markdown with page break markers (using page_break_placeholder)")
-    except TypeError as e:
-        logger.warning(f"page_break_placeholder not supported: {e}")
-        logger.info("Trying page-by-page extraction method...")
+    def export_markdown_with_page_breaks(current_doc):
+        logger.info("Exporting structured Markdown with page break markers")
         
-        # Method 2: Extract page-by-page and reconstruct
-        page_by_page_data = extract_page_mapping_page_by_page(doc)
+        # Try method 1: Use page_break_placeholder (docling 2.28.2+)
+        md = None
         
-        if page_by_page_data and page_by_page_data.get("page_contents"):
-            # Reconstruct markdown with page breaks between pages
-            page_contents = page_by_page_data["page_contents"]
-            markdown = "\n<!-- page break -->\n".join(page_contents)
-            logger.info(f"✓ Reconstructed markdown with {page_by_page_data['total_pages']} pages (page-by-page method)")
-        else:
-            # Method 3: Fallback - export normally and use text element grouping
-            logger.warning("Page-by-page extraction failed, using text element grouping...")
-            markdown = doc.document.export_to_markdown()
+        try:
+            md = current_doc.document.export_to_markdown(page_break_placeholder="<!-- page break -->")
+            logger.info("✓ Successfully exported markdown with page break markers (using page_break_placeholder)")
+        except TypeError as e:
+            logger.warning(f"page_break_placeholder not supported: {e}")
+            logger.info("Trying page-by-page extraction method...")
             
-            # Group text elements by page and insert markers (heuristic)
-            try:
-                pages_dict = {}  # page_no -> list of text items
-                for text_item in doc.document.texts:
-                    if hasattr(text_item, 'prov') and text_item.prov:
-                        for prov in text_item.prov:
-                            if hasattr(prov, 'page_no'):
-                                page_no = prov.page_no
-                                if page_no not in pages_dict:
-                                    pages_dict[page_no] = []
-                                pages_dict[page_no].append(text_item.text)
-                                break
+            # Method 2: Extract page-by-page and reconstruct
+            page_by_page_data = extract_page_mapping_page_by_page(current_doc)
+            
+            if page_by_page_data and page_by_page_data.get("page_contents"):
+                # Reconstruct markdown with page breaks between pages
+                page_contents = page_by_page_data["page_contents"]
+                md = "\n<!-- page break -->\n".join(page_contents)
+                logger.info(f"✓ Reconstructed markdown with {page_by_page_data['total_pages']} pages (page-by-page method)")
+            else:
+                # Method 3: Fallback - export normally and use text element grouping
+                logger.warning("Page-by-page extraction failed, using text element grouping...")
+                md = current_doc.document.export_to_markdown()
                 
-                if pages_dict:
-                    logger.info(f"Found {len(pages_dict)} pages via text element grouping")
-            except Exception as e2:
-                logger.warning(f"Text element grouping failed: {e2}")
+                # Group text elements by page and insert markers (heuristic)
+                try:
+                    pages_dict = {}  # page_no -> list of text items
+                    for text_item in current_doc.document.texts:
+                        if hasattr(text_item, 'prov') and text_item.prov:
+                            for prov in text_item.prov:
+                                if hasattr(prov, 'page_no'):
+                                    page_no = prov.page_no
+                                    if page_no not in pages_dict:
+                                        pages_dict[page_no] = []
+                                    pages_dict[page_no].append(text_item.text)
+                                    break
+                    
+                    if pages_dict:
+                        logger.info(f"Found {len(pages_dict)} pages via text element grouping")
+                except Exception as e2:
+                    logger.warning(f"Text element grouping failed: {e2}")
+        
+        # If markdown is still None, use basic export
+        if md is None:
+            logger.warning("All methods failed, using basic markdown export")
+            md = current_doc.document.export_to_markdown()
 
-    # If markdown is still None, use basic export
-    if markdown is None:
-        logger.warning("All methods failed, using basic markdown export")
-        markdown = doc.document.export_to_markdown()
+        return md
+
+    # First export attempt (no OCR)
+    markdown = export_markdown_with_page_breaks(doc)
+
+    # If we only got image placeholders / page breaks, rerun conversion with OCR enabled
+    if markdown and is_image_only_markdown(markdown):
+        logger.warning(
+            "Markdown appears to contain only image placeholders/page breaks. "
+            "Re-running conversion with OCR enabled for better extraction..."
+        )
+
+        ocr_pipeline_options = PdfPipelineOptions()
+        ocr_pipeline_options.do_ocr = True
+
+        ocr_converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=ocr_pipeline_options)
+            }
+        )
+
+        logger.info("Re-converting document with OCR enabled")
+        doc = ocr_converter.convert(str(pdf_path))
+
+        # Apply hierarchical postprocessor to OCR doc so heading levels (#, ##, etc.) are preserved
+        logger.info("Applying hierarchical postprocessor to OCR result (heading levels)...")
+        try:
+            ResultPostprocessor(doc, source=str(pdf_path)).process()
+            logger.info("✓ Applied hierarchical postprocessor to OCR result")
+        except Exception as e:
+            logger.warning(f"Hierarchical postprocessor failed on OCR doc: {e}")
+            try:
+                ResultPostprocessor(doc).process()
+            except Exception as e2:
+                logger.warning(f"Hierarchical postprocessor failed even without source: {e2}")
+
+        markdown = export_markdown_with_page_breaks(doc)
 
     # ---------------- FIX MARKDOWN TABLES ----------------
     logger.info("Fixing markdown table formatting (preserving page breaks)")
