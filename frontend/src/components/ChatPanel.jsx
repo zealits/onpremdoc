@@ -7,7 +7,7 @@ const SUGGESTED = [
   'Summarize the main points.',
 ]
 
-export default function ChatPanel({ documentId, documentReady }) {
+export default function ChatPanel({ documentId, documentReady, onHighlightChunk }) {
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const bottomRef = useRef(null)
@@ -24,7 +24,14 @@ export default function ChatPanel({ documentId, documentReady }) {
     setMessages((m) => [...m, { role: 'user', content: q }])
     try {
       const res = await queryMutation.mutateAsync({ query: q })
-      setMessages((m) => [...m, { role: 'assistant', content: res.answer }])
+      setMessages((m) => [
+        ...m,
+        {
+          role: 'assistant',
+          content: res.answer,
+          chunks: res.chunks || [],
+        },
+      ])
     } catch (err) {
       setMessages((m) => [
         ...m,
@@ -88,8 +95,39 @@ export default function ChatPanel({ documentId, documentReady }) {
               }`}
             >
               {msg.role === 'assistant' ? (
-                <div className="space-y-1">
+                <div className="space-y-2">
                   <ReactMarkdown>{msg.content}</ReactMarkdown>
+                  {msg.chunks?.length > 0 && (
+                    <div className="mt-2 pt-2 border-t border-gray-200 space-y-1.5">
+                      <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                        Sources
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {msg.chunks.map((chunk, j) => {
+                          if (chunk.page_number == null || !onHighlightChunk) return null
+                          const label =
+                            (chunk.section_title && chunk.section_title !== 'No heading'
+                              ? `${chunk.section_title} – `
+                              : '') + `Page ${chunk.page_number}`
+                          return (
+                            <button
+                              key={j}
+                              type="button"
+                              onClick={() =>
+                                onHighlightChunk({
+                                  pageNumber: chunk.page_number,
+                                  text: chunk.content,
+                                })
+                              }
+                              className="text-xs px-2 py-1 rounded-full bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-100"
+                            >
+                              {label}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
               ) : (
                 msg.content
