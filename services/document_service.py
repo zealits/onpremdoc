@@ -123,12 +123,28 @@ def get_document_info(document_id: str) -> Optional[Dict[str, Any]]:
         status = "ready"
 
     total_pages = None
+    doc_summary = None
+    suggested_queries = None
     if page_mapping_path:
         try:
             with open(page_mapping_path, "r", encoding="utf-8") as f:
                 total_pages = json.load(f).get("total_pages")
         except Exception:
             pass
+
+    # Try to load document overview (summary + suggested queries) if present
+    if md_path:
+        try:
+            stem = md_path.stem
+            overview_path = doc_path / "E" / f"{stem}_doc_overview.json"
+            if overview_path.exists():
+                with open(overview_path, "r", encoding="utf-8") as f:
+                    overview_data = json.load(f)
+                doc_summary = overview_data.get("doc_summary")
+                suggested_queries = overview_data.get("suggested_queries")
+        except Exception:
+            doc_summary = None
+            suggested_queries = None
 
     return {
         "document_id": document_id,
@@ -148,6 +164,8 @@ def get_document_info(document_id: str) -> Optional[Dict[str, Any]]:
         "table_score": table_score,
         "mean_grade": mean_grade,
         "low_grade": low_grade,
+        "doc_summary": doc_summary,
+        "suggested_queries": suggested_queries,
     }
 
 
@@ -368,10 +386,12 @@ def query_document(
             cid = chunk.metadata.get("chunk_index")
             if cid is None:
                 continue
+            raw_lines = chunk.metadata.get("raw_content_lines")
+            content_for_api = raw_lines if isinstance(raw_lines, list) else chunk.page_content
             source = "seed" if cid in seed_chunk_ids else ("graph_expanded" if cid in graph_expanded_ids else "initial")
             chunks_out.append({
                 "chunk_index": cid,
-                "content": chunk.page_content,
+                "content": content_for_api,
                 "heading": chunk.metadata.get("heading", "No heading"),
                 "section_path": chunk.metadata.get("section_path", ""),
                 "section_title": chunk.metadata.get("section_title", ""),
@@ -391,10 +411,12 @@ def query_document(
             cid = chunk.metadata.get("chunk_index")
             if cid is None or any(c["chunk_index"] == cid for c in chunks_out):
                 continue
+            raw_lines = chunk.metadata.get("raw_content_lines")
+            content_for_api = raw_lines if isinstance(raw_lines, list) else chunk.page_content
             source = "second_seed" if cid in second_seed_ids else ("second_expanded" if cid in second_expanded_ids else "second_retrieval")
             chunks_out.append({
                 "chunk_index": cid,
-                "content": chunk.page_content,
+                "content": content_for_api,
                 "heading": chunk.metadata.get("heading", "No heading"),
                 "section_path": chunk.metadata.get("section_path", ""),
                 "section_title": chunk.metadata.get("section_title", ""),
@@ -429,6 +451,8 @@ def query_document(
         "chunk_analysis": final_state.get("chunk_analysis"),
         "chunks": chunks_out,
         "debug_info": debug_info,
+        # Suggested follow-up questions for UI to show under the answer
+        "next_questions": final_state.get("next_questions") or [],
     }
 
 

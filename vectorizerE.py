@@ -890,6 +890,102 @@ Page content:
         logger.warning(f"Error classifying page: {e}")
         return "Unknown"
 
+
+def summarize_page_for_overview(
+    page_number: int,
+    page_content: str,
+    llm: Any,
+    classification: Optional[str] = None,
+) -> Tuple[str, List[str]]:
+    """
+    Lightweight per-page summary for document overview generation.
+    This reuses patterns from the dedicated PageSummarizationAgent but is
+    intentionally cheaper and only used during vectorization.
+
+    Returns:
+        (summary, key_points)
+    """
+    # Truncate page content for safety
+    content_for_llm = page_content[:4000] + "..." if len(page_content) > 4000 else page_content
+
+    classification_note = f"\n\nPage Classification: {classification}" if classification else ""
+
+    prompt = f"""You are summarizing page {page_number} of a document.
+
+Page Content:
+{content_for_llm}
+{classification_note}
+
+Your task:
+1. Provide a concise summary of this page in 2-4 sentences.
+2. Extract 3-5 key points or important facts from this page.
+
+Format your response EXACTLY as follows:
+SUMMARY: [Your concise summary here]
+
+KEY_POINTS:
+- [First key point]
+- [Second key point]
+- [Third key point]
+[Continue with more key points as needed]
+
+Now provide the summary and key points:"""
+
+    try:
+        response = llm.invoke(prompt)
+        response_text = (getattr(response, "content", None) or str(response)).strip()
+
+        summary = ""
+        key_points: List[str] = []
+
+        if "SUMMARY:" in response_text:
+            summary_part = response_text.split("SUMMARY:")[1]
+            if "KEY_POINTS:" in summary_part:
+                summary = summary_part.split("KEY_POINTS:")[0].strip()
+                key_points_part = summary_part.split("KEY_POINTS:")[1]
+            else:
+                summary = summary_part.strip()
+                key_points_part = ""
+        else:
+            # Fallback: first paragraph as summary
+            lines = response_text.split("\n")
+            summary = lines[0] if lines else response_text[:200]
+            key_points_part = response_text
+
+        # Extract key points
+        if "KEY_POINTS:" in response_text:
+            key_points_section = response_text.split("KEY_POINTS:")[1]
+        else:
+            key_points_section = key_points_part
+
+        for line in key_points_section.split("\n"):
+            line = line.strip()
+            if line.startswith("-") or line.startswith("*"):
+                point = line.lstrip("-* ").strip()
+                if point:
+                    key_points.append(point)
+            elif line and not line.startswith("SUMMARY:"):
+                key_points.append(line)
+
+        # If still no key points, derive from summary sentences
+        if not key_points:
+            sentences = summary.split(". ")
+            key_points = [s.strip() + "." for s in sentences[:5] if s.strip()]
+
+        summary = summary.strip()
+        if not summary:
+            summary = "This page contains document content. Please refer to the full document for details."
+
+        return summary, key_points[:5]
+
+    except Exception as e:
+        logger.warning(f"Error summarizing page {page_number}: {e}")
+        # Fallback summary
+        fallback_summary = "This page contains document content. Please refer to the document for details."
+        sentences = page_content.split(". ")[:5]
+        key_points = [s.strip() + "." for s in sentences if len(s.strip()) > 20]
+        return fallback_summary, key_points
+
 def classify_pages(chunks: List[Document], page_mapping: Optional[Dict[str, Any]], llm: Any) -> Dict[int, str]:
     """Classify all pages based on their chunk content"""
     if not page_mapping:
@@ -927,6 +1023,117 @@ def classify_pages(chunks: List[Document], page_mapping: Optional[Dict[str, Any]
     logger.info(f"Classified {len(page_classifications)} pages")
     return page_classifications
 
+
+def summarize_document_from_pages(
+    page_summaries: Dict[int, Dict[str, Any]],
+    llm: Any
+) -> Dict[str, Any]:
+    """
+    Generate a document-level overview (summary + suggested queries) from
+    per-page summaries.
+
+    page_summaries: {page_num: {"summary": str, "key_points": [str], "classification": str}}
+    """
+    if not page_summaries:
+        return {
+            "doc_summary": "",
+            "suggested_queries": [],
+            "page_summaries": page_summaries,
+        }
+
+    # Build a compact representation for the LLM
+    parts: List[str] = []
+    for page_num in sorted(page_summaries.keys()):
+        ps = page_summaries[page_num]
+        summary = ps.get("summary", "")
+        key_points = ps.get("key_points", []) or []
+        classification = ps.get("classification") or ""
+        lines = [f"PAGE {page_num} ({classification}):", f"Summary: {summary}"]
+        if key_points:
+            lines.append("Key points:")
+            for kp in key_points[:5]:
+                lines.append(f"- {kp}")
+        parts.append("\n".join(lines))
+
+    overview_text = "\n\n".join(parts)
+    # Truncate to keep within LLM context
+    if len(overview_text) > 8000:
+        overview_text = overview_text[:8000] + "..."
+
+    prompt = f"""You are summarizing an entire document based on page-level summaries.
+
+Here are the page summaries:
+
+{overview_text}
+
+Your tasks:
+1. Write a single coherent summary (6-10 sentences) of what this entire document is about, focusing on what a human would want to know before reading it.
+2. Suggest 5-10 example user questions that would retrieve the most important information from this document when using a semantic search / RAG system.
+
+Format your response EXACTLY as follows:
+DOC_SUMMARY:
+[Your multi-sentence summary here]
+
+SUGGESTED_QUERIES:
+- [query 1]
+- [query 2]
+- [query 3]
+[continue as needed]
+
+Now provide the document summary and suggested queries."""
+
+    doc_summary = ""
+    suggested_queries: List[str] = []
+
+    try:
+        response = llm.invoke(prompt)
+        response_text = (getattr(response, "content", None) or str(response)).strip()
+
+        if "DOC_SUMMARY:" in response_text:
+            ds_part = response_text.split("DOC_SUMMARY:")[1]
+            if "SUGGESTED_QUERIES:" in ds_part:
+                doc_summary = ds_part.split("SUGGESTED_QUERIES:")[0].strip()
+                queries_part = ds_part.split("SUGGESTED_QUERIES:")[1]
+            else:
+                doc_summary = ds_part.strip()
+                queries_part = ""
+        else:
+            # Fallback: first paragraph as summary
+            lines = response_text.split("\n")
+            doc_summary = lines[0] if lines else response_text[:400]
+            queries_part = response_text
+
+        # Extract queries
+        if "SUGGESTED_QUERIES:" in response_text:
+            queries_section = response_text.split("SUGGESTED_QUERIES:")[1]
+        else:
+            queries_section = queries_part
+
+        for line in queries_section.split("\n"):
+            line = line.strip()
+            if line.startswith("-") or line.startswith("*"):
+                q = line.lstrip("-* ").strip()
+                if q:
+                    suggested_queries.append(q)
+
+        suggested_queries = suggested_queries[:10]
+
+    except Exception as e:
+        logger.warning(f"Error generating document overview: {e}")
+        # Fallback: generic summary and queries
+        doc_summary = "This document contains multiple sections and detailed information. Please review the document for specifics."
+        suggested_queries = [
+            "What is this document about?",
+            "What are the key benefits or main topics in this document?",
+            "What are the important definitions and terms?",
+        ]
+
+    return {
+        "doc_summary": doc_summary.strip(),
+        "suggested_queries": suggested_queries,
+        "page_summaries": page_summaries,
+    }
+
 # ---------------- STATE DEFINITION ---------------- 
 class VectorizerState(TypedDict):
     """State for the vectorization workflow"""
@@ -941,6 +1148,8 @@ class VectorizerState(TypedDict):
     page_classifications: Optional[Dict[int, str]]
     output_folder: Optional[str]
     token_usage: Optional[Dict[str, Any]]  # For economics tracker: embedding_tokens, llm_tokens, total_chunks, truncated_chunks
+    # Document-level overview (built from per-page summaries during vectorization)
+    doc_overview: Optional[Dict[str, Any]]
 
 # ---------------- WORKFLOW NODES ---------------- 
 def load_markdown(state: VectorizerState) -> VectorizerState:
@@ -1180,8 +1389,9 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
         # No chunk summary (not used downstream); keep key for compatibility
         summary = ""
         
-        # Prepare content for embedding
-        content = chunk.page_content
+        # Prepare content for embedding (keep exact markdown slice for vector_mapping searchability)
+        original_content = chunk.page_content  # exact substring of markdown, never truncated in JSON
+        content = original_content
         original_length = len(content)
         content, was_truncated = token_tracker.check_embedding_limit(content)
         
@@ -1274,14 +1484,18 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
         full_metadata = chroma_metadata.copy()
         full_metadata["prev_chunk_ids"] = prev_chunk_ids
         full_metadata["next_chunk_ids"] = next_chunk_ids
-        
+        # Store content as list of lines so JSON has no literal \n — exact match when joined and searchable in .md
+        content_lines = original_content.split("\n")
+        start_ln = int(chunk.metadata.get("start_line", 0))
+        full_metadata["end_line"] = (start_ln + len(content_lines) - 1) if content_lines else start_ln
+
         chunk_detail = {
             "vector_number": vector_number,
             "heading": heading,
             "summary": summary,
             "section_path": section_path,
-            "content": content,
-            "content_length": len(content),
+            "content": content_lines,
+            "content_length": len(original_content),
             "metadata": full_metadata
         }
         
@@ -1314,8 +1528,10 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
             chunk_doc = None
             for chunk_detail in processed_chunks:
                 if chunk_detail.get("vector_number") == chunk_id:
+                    raw_content = chunk_detail.get("content", "")
+                    content_str = "\n".join(raw_content) if isinstance(raw_content, list) else raw_content
                     chunk_doc = Document(
-                        page_content=chunk_detail.get("content", ""),
+                        page_content=content_str,
                         metadata=chunk_detail.get("metadata", {})
                     )
                     break

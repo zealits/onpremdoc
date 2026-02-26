@@ -86,6 +86,9 @@ class DocumentInfo(BaseModel):
     table_score: Optional[float] = None
     mean_grade: Optional[str] = None
     low_grade: Optional[str] = None
+    # High-level document overview (generated after vectorization)
+    doc_summary: Optional[str] = None
+    suggested_queries: Optional[List[str]] = None
 
 
 class ConfidencePageScores(BaseModel):
@@ -146,7 +149,10 @@ class VectorizeResponse(BaseModel):
 class ChunkDetail(BaseModel):
     """Detailed information about a retrieved chunk"""
     chunk_index: int
-    content: str
+    # Content can be either:
+    # - List[str]: exact lines as stored in vector_mapping JSON (preferred for highlighting in markdown)
+    # - str: fallback for older documents
+    content: Any
     heading: str
     section_path: str
     section_title: str
@@ -179,6 +185,7 @@ class QueryResponse(BaseModel):
     chunk_analysis: Optional[str] = None
     chunks: List[ChunkDetail] = Field(default_factory=list, description="Detailed information about chunks used to generate the answer")
     debug_info: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Debugging information about retrieval process")
+    next_questions: List[str] = Field(default_factory=list, description="Suggested follow-up questions based on the answer")
 
 
 class VisualizationRequest(BaseModel):
@@ -554,7 +561,9 @@ async def query_document(request: QueryRequest):
         logger.error(f"Error during query: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
 
-    # Build ChunkDetail list from service dicts
+    # Build ChunkDetail list from service dicts.
+    # `content` is passed through as-is so that, when available, it matches
+    # the exact representation from the vector_mapping JSON (list of lines).
     chunks_detail = [
         ChunkDetail(
             chunk_index=c["chunk_index"],
@@ -584,6 +593,7 @@ async def query_document(request: QueryRequest):
         chunk_analysis=result.get("chunk_analysis"),
         chunks=chunks_detail,
         debug_info=result.get("debug_info") or {},
+        next_questions=result.get("next_questions") or [],
     )
 
 

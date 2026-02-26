@@ -253,6 +253,8 @@ class AgentState(TypedDict):
     document_folder: Optional[str]  # Path to document folder for page summarization
     debug_info: Dict[str, Any]  # Debugging information
     token_usage: Optional[List[Dict[str, Any]]]  # Per-step token counts for economics reporting
+    # Suggested follow-up questions based on the original query and final answer
+    next_questions: Optional[List[str]]
 
 # ---------------- TOKEN USAGE HELPERS (economics) ----------------
 def _est_tokens(text: str) -> int:
@@ -289,9 +291,14 @@ def load_chunks_from_mapping(mapping_file: Path) -> List[Document]:
     
     chunks = []
     for item in mapping_data:
+        raw_content = item.get("content", "")
+        content_str = "\n".join(raw_content) if isinstance(raw_content, list) else raw_content
+        # Preserve the exact content representation from the mapping for downstream consumers
+        metadata = item.get("metadata", {}).copy()
+        metadata["raw_content_lines"] = raw_content
         doc = Document(
-            page_content=item.get("content", ""),
-            metadata=item.get("metadata", {})
+            page_content=content_str,
+            metadata=metadata
         )
         chunks.append(doc)
     
@@ -817,7 +824,7 @@ def generate_final_answer(state: AgentState) -> AgentState:
     chunks_text = []
     rerank_scores = state.get("rerank_scores", {})
     
-    for i, chunk in enumerate(chunks_to_use, 1):
+    for chunk in chunks_to_use:
         chunk_id = chunk.metadata.get("chunk_index")
         heading = chunk.metadata.get("heading", "No heading")
         section = chunk.metadata.get("section_path", "No section")
@@ -829,8 +836,10 @@ def generate_final_answer(state: AgentState) -> AgentState:
         if chunk_id in rerank_scores:
             relevance_note = f" (Relevance: {rerank_scores[chunk_id]:.2f})"
         
+        # IMPORTANT: we label each chunk with its real vector index (chunk_index)
+        # so the LLM can cite sources using [C<ChunkId>] markers.
         chunks_text.append(f"""
-[Chunk {i}]
+[ChunkId: {chunk_id}]
 Section: {section}
 Heading: {heading}
 Summary: {summary}
@@ -840,7 +849,8 @@ Content: {content}{relevance_note}
     context = "\n".join(chunks_text)
     
     # Put the question first and repeat before answer so the model always sees it.
-    # Instruct the model to return a well-structured, markdown-formatted answer with bold headings.
+    # Instruct the model to return a well-structured, markdown-formatted answer with bold headings
+    # and inline citations that reference the underlying chunk indexes.
     answer_prompt = f"""QUESTION (answer this using only the document chunks below):
 {query}
 
@@ -858,8 +868,13 @@ Write the answer in CLEAR, WELL-FORMATTED MARKDOWN:
 - Use **bold subheadings** for important parts (for example: **Definition**, **Conditions**, **Exceptions**, **Important Dates**).
 - When listing items, steps, obligations, or conditions, use bullet points.
 - If the document does not state something explicitly, say that clearly (do not invent details).
+- VERY IMPORTANT: When you use information from one or more chunks, add citation markers at the end of the relevant sentence
+  using the following format, where ChunkId is the numeric id from the context above:
+  - Example with one source: This is some fact. [C12]
+  - Example with multiple sources: This is an important point. [C12][C27]
+  Only use ChunkIds that appear in the context (the [ChunkId: N] labels); do NOT make up ids.
 
-Answer (use only the chunks above; no chunk numbers):"""
+Answer (use only the chunks above; include citation markers as described):"""
     
     try:
         response = llm.invoke(answer_prompt)
@@ -895,9 +910,66 @@ Answer (use only the chunks above; no chunk numbers):"""
         if not all_chunks:
             logger.warning("No chunks available for answer generation")
             state["final_answer"] = "I could not retrieve sufficient information from the document to answer this question."
+            state["next_questions"] = []
         else:
             state["final_answer"] = final_answer
             logger.info(f"Final answer generated from {len(chunks_to_use)} chunks")
+
+            # Generate suggested follow-up questions based on the original query and answer
+            followup_prompt = f"""You are helping a user explore a long insurance policy document.
+
+Original user question:
+{query}
+
+Your answer:
+{final_answer}
+
+Now propose 3–7 SHORT, concrete follow-up questions that the user might naturally ask next
+to go deeper or clarify details. Focus on practical, answerable questions about this document.
+
+Reply in the following format ONLY:
+- question 1
+- question 2
+- question 3
+..."""
+            try:
+                fu_response = llm.invoke(followup_prompt)
+                fu_text = (getattr(fu_response, "content", None) or str(fu_response)).strip()
+                _append_token_usage(
+                    state,
+                    "generate_followups",
+                    input_tokens=_est_tokens(followup_prompt),
+                    output_tokens=_est_tokens(fu_text),
+                )
+
+                suggestions: List[str] = []
+                for line in fu_text.split("\n"):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    # Accept "- q", "* q", or numbered "1. q"
+                    if line[0] in "-*":
+                        q = line[1:].strip()
+                    else:
+                        q = line
+                        # Strip leading numbering like "1. ", "2) "
+                        q = re.sub(r"^\d+[\.\)]\s*", "", q)
+                    q = q.strip()
+                    if q:
+                        suggestions.append(q)
+                # Deduplicate and cap
+                deduped = []
+                seen = set()
+                for q in suggestions:
+                    k = q.lower()
+                    if k in seen:
+                        continue
+                    seen.add(k)
+                    deduped.append(q)
+                state["next_questions"] = deduped[:7]
+            except Exception as fe:
+                logger.warning(f"Failed to generate follow-up questions: {fe}")
+                state["next_questions"] = []
         
         # Update debug info
         debug_info = state.get("debug_info", {})
@@ -907,6 +979,7 @@ Answer (use only the chunks above; no chunk numbers):"""
             "primary_chunks": len(primary_chunks),
             "second_chunks": len(second_chunks),
             "answer_length": len(final_answer) if all_chunks else 0,
+            "next_questions_count": len(state.get("next_questions") or []),
         }
         state["debug_info"] = debug_info
         
