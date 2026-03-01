@@ -815,9 +815,15 @@ def generate_final_answer(state: AgentState) -> AgentState:
         all_chunks = primary_chunks.copy()
         max_chunks = 25
     chunks_to_use = all_chunks[:max_chunks]
-    
+    # Track exact chunk indices sent to LLM so API can return only these as "sources"
+    state["chunk_indices_used_for_answer"] = {
+        c.metadata.get("chunk_index")
+        for c in chunks_to_use
+        if c.metadata.get("chunk_index") is not None
+    }
+
     llm = _llm
-    
+
     logger.info(f"Generating final answer from {len(all_chunks)} chunks (primary: {len(primary_chunks)}, second: {len(second_chunks)})...")
     
     # Prepare comprehensive context

@@ -7,7 +7,67 @@ const SUGGESTED = [
   'Summarize the main points.',
 ]
 
-export default function ChatPanel({ documentId, documentReady, onHighlightChunk }) {
+const CITATION_REGEX = /\[C(\d+)\]/g
+
+/** Rehype plugin: replace [C9], [C2] etc. in text nodes with inline <span dataCitation="9"> so they render as clickable. */
+function rehypeCitationSpans() {
+  return (tree) => {
+    function visit(node, parent, idx) {
+      if (parent?.type === 'element' && (parent.properties?.['data-citation'] || parent.properties?.dataCitation)) return
+      if (node.type === 'text' && node.value && /\[C\d+\]/.test(node.value)) {
+        const parts = node.value.split(/(\[C(\d+)\])/g)
+        const newNodes = []
+        for (let i = 0; i < parts.length; i++) {
+          if (i % 3 === 0 && parts[i]) newNodes.push({ type: 'text', value: parts[i] })
+          else if (i % 3 === 2)
+            newNodes.push({
+              type: 'element',
+              tagName: 'span',
+              properties: {
+                'data-citation': parts[i],
+                className: 'chunk-citation',
+              },
+              children: [{ type: 'text', value: `[C${parts[i]}]` }],
+            })
+        }
+        if (parent && typeof idx === 'number' && newNodes.length) {
+          parent.children.splice(idx, 1, ...newNodes)
+        }
+        return
+      }
+      if (node.children) for (let i = 0; i < node.children.length; i++) visit(node.children[i], node, i)
+    }
+    visit(tree, null, 0)
+  }
+}
+
+function CitationButton({ chunkId, chunks, onHighlight }) {
+  const chunk = (chunks || []).find((c) => c.chunk_index === chunkId)
+  const handleClick = () => {
+    if (!onHighlight || !chunk) return
+    const contentStr = Array.isArray(chunk.content)
+      ? chunk.content.join('\n')
+      : (chunk.content ?? '')
+    onHighlight({
+      pageNumber: chunk.page_number,
+      text: contentStr,
+      sectionTitle: chunk.section_title,
+      heading: chunk.heading,
+    })
+  }
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      className="inline align-baseline mx-0.5 px-0 py-0 rounded-none border-0 bg-transparent text-blue-600 hover:text-blue-800 hover:underline cursor-pointer font-inherit"
+      title={chunk ? `Go to source (${chunk.section_title || 'Page ' + chunk.page_number})` : 'Go to source'}
+    >
+      [C{chunkId}]
+    </button>
+  )
+}
+
+function ChatPanel({ documentId, documentReady, onHighlightChunk }) {
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const bottomRef = useRef(null)
@@ -67,7 +127,7 @@ export default function ChatPanel({ documentId, documentReady, onHighlightChunk 
       <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 space-y-4">
         {messages.length === 0 && (
           <div className="text-gray-500 text-sm space-y-3">
-            <p>Ask any question about this PDF.</p>
+            <p>Ask any question about this document.</p>
             <div className="flex flex-wrap gap-2">
               {SUGGESTED.map((q) => (
                 <button
@@ -95,39 +155,34 @@ export default function ChatPanel({ documentId, documentReady, onHighlightChunk 
               }`}
             >
               {msg.role === 'assistant' ? (
-                <div className="space-y-2">
-                  <ReactMarkdown>{msg.content}</ReactMarkdown>
-                  {msg.chunks?.length > 0 && (
-                    <div className="mt-2 pt-2 border-t border-gray-200 space-y-1.5">
-                      <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-                        Sources
-                      </p>
-                      <div className="flex flex-wrap gap-1.5">
-                        {msg.chunks.map((chunk, j) => {
-                          if (chunk.page_number == null || !onHighlightChunk) return null
-                          const label =
-                            (chunk.section_title && chunk.section_title !== 'No heading'
-                              ? `${chunk.section_title} – `
-                              : '') + `Page ${chunk.page_number}`
+                <div className="space-y-2 prose-citations">
+                  <ReactMarkdown
+                    rehypePlugins={[rehypeCitationSpans]}
+                    components={{
+                      span: (props) => {
+                        let citationId = props['data-citation'] ?? props.dataCitation ?? props.node?.properties?.['data-citation'] ?? props.node?.properties?.dataCitation
+                        if (citationId == null || citationId === '') {
+                          const child = props.children
+                          const str = typeof child === 'string' ? child : (Array.isArray(child) && child.length === 1 && typeof child[0] === 'string' ? child[0] : null)
+                          const m = str && str.match(/^\[C(\d+)\]$/)
+                          if (m) citationId = m[1]
+                        }
+                        if (citationId != null && citationId !== '') {
                           return (
-                            <button
-                              key={j}
-                              type="button"
-                              onClick={() =>
-                                onHighlightChunk({
-                                  pageNumber: chunk.page_number,
-                                  text: chunk.content,
-                                })
-                              }
-                              className="text-xs px-2 py-1 rounded-full bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-100"
-                            >
-                              {label}
-                            </button>
+                            <CitationButton
+                              chunkId={parseInt(String(citationId), 10)}
+                              chunks={msg.chunks}
+                              onHighlight={onHighlightChunk}
+                            />
                           )
-                        })}
-                      </div>
-                    </div>
-                  )}
+                        }
+                        const { node, ...spanProps } = props
+                        return <span {...spanProps} />
+                      },
+                    }}
+                  >
+                    {msg.content}
+                  </ReactMarkdown>
                 </div>
               ) : (
                 msg.content
@@ -168,3 +223,5 @@ export default function ChatPanel({ documentId, documentReady, onHighlightChunk 
     </div>
   )
 }
+
+export default ChatPanel

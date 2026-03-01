@@ -37,6 +37,20 @@ export function getPdfUrl(documentId) {
   return `${base()}/documents/${documentId}/pdf`
 }
 
+export function getMarkdownUrl(documentId) {
+  return `${base()}/documents/${documentId}/markdown`
+}
+
+export async function getMarkdown(documentId) {
+  const url = getMarkdownUrl(documentId)
+  const res = await fetch(url)
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `HTTP ${res.status}`)
+  }
+  return res.text()
+}
+
 export async function listDocuments() {
   return request('/documents')
 }

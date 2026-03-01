@@ -7,7 +7,7 @@ export default function Layout() {
       <aside className="w-56 flex-shrink-0 border-r border-gray-200 bg-white flex flex-col">
         <div className="p-4 border-b border-gray-100">
           <Link to="/" className="font-semibold text-gray-800 hover:text-indigo-600">
-            Chat PDF
+            Chat Document
           </Link>
         </div>
         <nav className="p-2">

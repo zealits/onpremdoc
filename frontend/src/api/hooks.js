@@ -6,6 +6,7 @@ import {
 import {
   listDocuments,
   getDocument,
+  getMarkdown,
   uploadPdf,
   vectorize,
   queryDocument,
@@ -15,6 +16,7 @@ export const documentKeys = {
   all: ['documents'],
   list: () => [...documentKeys.all, 'list'],
   detail: (id) => [...documentKeys.all, id],
+  markdown: (id) => [...documentKeys.all, id, 'markdown'],
 }
 
 export function useDocuments() {
@@ -62,5 +64,13 @@ export function useVectorize(documentId) {
 export function useQueryDocument(documentId) {
   return useMutation({
     mutationFn: ({ query }) => queryDocument(documentId, query),
+  })
+}
+
+export function useMarkdown(documentId) {
+  return useQuery({
+    queryKey: documentKeys.markdown(documentId),
+    queryFn: () => getMarkdown(documentId),
+    enabled: !!documentId,
   })
 }

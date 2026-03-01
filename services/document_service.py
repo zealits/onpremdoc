@@ -432,6 +432,11 @@ def query_document(
                 "similarity_score": second_seed_scores.get(cid),
                 "rerank_score": rerank_scores.get(cid),
             })
+        # Return only chunks that were actually sent to the LLM for the answer (if tracked)
+        used_ids = final_state.get("chunk_indices_used_for_answer")
+        if used_ids is not None and isinstance(used_ids, (set, list)):
+            used_set = set(used_ids)
+            chunks_out = [c for c in chunks_out if c["chunk_index"] in used_set]
         chunks_out.sort(key=lambda c: c["chunk_index"])
 
     debug_info = dict(final_state.get("debug_info", {}))

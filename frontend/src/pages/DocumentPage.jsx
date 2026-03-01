@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { useDocument, useVectorize } from '../api/hooks'
-import PdfViewer from '../components/PdfViewer'
+import MarkdownViewer from '../components/MarkdownViewer'
 import ChatPanel from '../components/ChatPanel'
 
 export default function DocumentPage() {
@@ -59,7 +59,7 @@ export default function DocumentPage() {
       </header>
       <div className="flex-1 grid grid-cols-2 gap-0 min-h-0">
         <div className="min-w-0 min-h-0 flex flex-col overflow-hidden">
-          <PdfViewer
+          <MarkdownViewer
             documentId={ready ? documentId : null}
             activeHighlight={activeHighlight}
           />
@@ -67,7 +67,7 @@ export default function DocumentPage() {
             <div className="flex-1 flex items-center justify-center text-gray-500 bg-gray-50 p-4">
               {doc?.status === 'uploaded' && 'Waiting for processing…'}
               {(doc?.status === 'processing' || doc?.status === 'vectorized') &&
-                'Vectorizing… PDF will appear when ready.'}
+                'Vectorizing… Markdown will appear when ready.'}
             </div>
           )}
         </div>
