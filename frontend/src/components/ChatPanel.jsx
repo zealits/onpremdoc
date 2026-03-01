@@ -90,6 +90,7 @@ function ChatPanel({ documentId, documentReady, onHighlightChunk }) {
           role: 'assistant',
           content: res.answer,
           chunks: res.chunks || [],
+          next_questions: res.next_questions || [],
         },
       ])
     } catch (err) {
@@ -183,6 +184,24 @@ function ChatPanel({ documentId, documentReady, onHighlightChunk }) {
                   >
                     {msg.content}
                   </ReactMarkdown>
+                  {(msg.next_questions?.length ?? 0) > 0 && (
+                    <div className="mt-3 pt-2 border-t border-gray-200">
+                      <p className="text-xs font-medium text-gray-500 mb-2">Suggested follow-up questions</p>
+                      <div className="flex flex-wrap gap-2">
+                        {msg.next_questions.map((question, j) => (
+                          <button
+                            key={j}
+                            type="button"
+                            onClick={() => send(question)}
+                            className="px-3 py-1.5 rounded-lg border border-indigo-200 text-indigo-700 text-sm hover:bg-indigo-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                            disabled={queryMutation.isPending}
+                          >
+                            {question}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               ) : (
                 msg.content
