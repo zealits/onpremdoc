@@ -2,6 +2,70 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Document processing animations */
+@keyframes processing-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes processing-pulse-soft {
+  0%, 100% { opacity: 0.6; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.02); }
+}
+
+@keyframes processing-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+@keyframes processing-dots {
+  0%, 20% { content: '.'; }
+  40% { content: '..'; }
+  60%, 100% { content: '...'; }
+}
+
+@keyframes processing-glow {
+  0%, 100% { box-shadow: 0 0 20px rgba(99, 102, 241, 0.15); }
+  50% { box-shadow: 0 0 32px rgba(99, 102, 241, 0.25); }
+}
+
+@keyframes processing-step-pulse {
+  0%, 100% { background-color: rgb(229 231 235); }
+  50% { background-color: rgb(199 210 254); }
+}
+
+@keyframes processing-fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-processing-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgb(243 244 246) 0%,
+    rgb(238 242 255) 50%,
+    rgb(243 244 246) 100%
+  );
+  background-size: 200% 100%;
+  animation: processing-shimmer 2s ease-in-out infinite;
+}
+
+.animate-processing-pulse-soft {
+  animation: processing-pulse-soft 2s ease-in-out infinite;
+}
+
+.animate-processing-float {
+  animation: processing-float 2.5s ease-in-out infinite;
+}
+
+.animate-processing-glow {
+  animation: processing-glow 2s ease-in-out infinite;
+}
+
+.animate-processing-fade-in {
+  animation: processing-fade-in 0.5s ease-out forwards;
+}
+
 body {
   margin: 0;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
