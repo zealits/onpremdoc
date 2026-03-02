@@ -72,7 +72,11 @@ export default function Layout() {
               <button
                 type="button"
                 onClick={toggleTheme}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-700/40 bg-slate-950/40 text-slate-300 hover:border-indigo-400 hover:text-indigo-300 transition-colors text-xs"
+                className={`inline-flex h-8 w-8 items-center justify-center rounded-full border text-xs transition-colors ${
+                  theme === 'dark'
+                    ? 'border-slate-700/40 bg-slate-950/40 text-slate-300 hover:border-indigo-400 hover:text-indigo-300'
+                    : 'border-slate-300 bg-white text-slate-600 hover:border-indigo-300 hover:text-indigo-500'
+                }`}
                 aria-label="Toggle light / dark theme"
               >
                 {theme === 'dark' ? '☾' : '☼'}
