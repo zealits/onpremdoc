@@ -27,9 +27,12 @@ export default function DocumentPage() {
   const vectorizeMutation = useVectorize(documentId)
   const vectorizeTriggered = useRef(false)
   const [activeHighlight, setActiveHighlight] = useState(null)
+  const [isMarkdownOpen, setIsMarkdownOpen] = useState(false)
 
   useEffect(() => {
     vectorizeTriggered.current = false
+    setActiveHighlight(null)
+    setIsMarkdownOpen(false)
   }, [documentId])
 
   useEffect(() => {
@@ -82,13 +85,25 @@ export default function DocumentPage() {
           </span>
         )}
       </header>
-      <div className="flex-1 grid grid-cols-2 gap-0 min-h-0">
-        <div className="min-w-0 min-h-0 flex flex-col overflow-hidden">
-          <MarkdownViewer
-            documentId={ready ? documentId : null}
-            activeHighlight={activeHighlight}
-          />
-          {!ready && (
+      <div className="flex-1 flex min-h-0">
+        <div
+          className={`relative min-w-0 min-h-0 flex flex-col overflow-hidden transition-all duration-300 ease-out ${
+            ready
+              ? isMarkdownOpen
+                ? 'w-1/2 opacity-100'
+                : 'w-0 opacity-0 pointer-events-none'
+              : 'w-1/2'
+          }`}
+        >
+          {ready ? (
+            isMarkdownOpen && (
+              <MarkdownViewer
+                documentId={documentId}
+                activeHighlight={activeHighlight}
+                onClose={() => setIsMarkdownOpen(false)}
+              />
+            )
+          ) : (
             <div className="flex-1 flex items-center justify-center bg-gradient-to-br from-slate-50 via-indigo-50/30 to-slate-50 p-6 min-h-0">
               <div className="animate-processing-fade-in max-w-sm w-full text-center">
                 <div className="relative inline-flex justify-center mb-6">
@@ -136,11 +151,18 @@ export default function DocumentPage() {
             </div>
           )}
         </div>
-        <div className="min-w-0 min-h-0 flex flex-col overflow-hidden">
+        <div
+          className={`min-w-0 min-h-0 flex flex-col overflow-hidden transition-all duration-300 ease-out ${
+            ready && isMarkdownOpen ? 'w-1/2' : 'w-full'
+          }`}
+        >
           <ChatPanel
             documentId={documentId}
             documentReady={ready}
-            onHighlightChunk={(chunk) => setActiveHighlight(chunk)}
+            onHighlightChunk={(chunk) => {
+              setActiveHighlight(chunk)
+              setIsMarkdownOpen(true)
+            }}
           />
         </div>
       </div>

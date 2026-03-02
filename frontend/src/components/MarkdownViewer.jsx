@@ -58,7 +58,7 @@ function findTextAndScroll(container, searchText, sectionTitle, heading) {
   }
 }
 
-export default function MarkdownViewer({ documentId, activeHighlight }) {
+export default function MarkdownViewer({ documentId, activeHighlight, onClose }) {
   const contentRef = useRef(null)
   const { data: markdown, isLoading, error } = useMarkdown(documentId)
 
@@ -95,6 +95,17 @@ export default function MarkdownViewer({ documentId, activeHighlight }) {
   return (
     <div className="flex flex-col h-full min-h-0 bg-gray-100">
       <div className="flex items-center gap-2 px-2 py-1.5 bg-white border-b border-gray-200 shrink-0">
+        {typeof onClose === 'function' && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
+          >
+            <span className="text-base leading-none mr-1">&times;</span>
+            <span className="hidden sm:inline">Close</span>
+          </button>
+        )}
+        <span className="text-xs text-gray-400">Document preview</span>
         <a
           href={markdownUrl}
           target="_blank"
