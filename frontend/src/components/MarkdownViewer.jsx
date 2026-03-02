@@ -3,6 +3,23 @@ import ReactMarkdown from 'react-markdown'
 import { useMarkdown } from '../api/hooks'
 import { getMarkdownUrl } from '../api/client'
 
+function highlightElementAndScroll(el) {
+  if (!el) return
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+
+  const root = el.closest('[data-markdown-root]') || el.parentElement || el
+  if (root) {
+    const prev = root.querySelectorAll('.markdown-highlight')
+    prev.forEach((node) => node.classList.remove('markdown-highlight'))
+  }
+
+  el.classList.add('markdown-highlight')
+  window.clearTimeout(el._markdownHighlightTimeout)
+  el._markdownHighlightTimeout = window.setTimeout(() => {
+    el.classList.remove('markdown-highlight')
+  }, 2000)
+}
+
 function findTextAndScroll(container, searchText, sectionTitle, heading) {
   if (!container) return
   const candidates = []
@@ -23,7 +40,7 @@ function findTextAndScroll(container, searchText, sectionTitle, heading) {
     const text = node.textContent || ''
     for (const candidate of candidates) {
       if (candidate && text.includes(candidate)) {
-        node.parentElement?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        if (node.parentElement) highlightElementAndScroll(node.parentElement)
         return
       }
     }
@@ -34,7 +51,7 @@ function findTextAndScroll(container, searchText, sectionTitle, heading) {
     for (const el of allHeadings) {
       const t = (el.textContent || '').trim().toLowerCase()
       if (t && (t.includes(toMatch.slice(0, 25)) || toMatch.includes(t.slice(0, 25)))) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        highlightElementAndScroll(el)
         return
       }
     }
@@ -89,6 +106,7 @@ export default function MarkdownViewer({ documentId, activeHighlight }) {
       </div>
       <div
         ref={contentRef}
+        data-markdown-root
         className="flex-1 min-h-0 overflow-auto p-4 text-gray-800 [&_h1]:text-2xl [&_h1]:font-semibold [&_h1]:mt-4 [&_h2]:text-xl [&_h2]:font-semibold [&_h2]:mt-3 [&_h3]:text-lg [&_h3]:font-medium [&_h3]:mt-2 [&_p]:my-2 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-6 [&_table]:border [&_table]:border-gray-300 [&_th]:border [&_th]:border-gray-300 [&_th]:px-2 [&_th]:py-1 [&_td]:border [&_td]:border-gray-300 [&_td]:px-2 [&_td]:py-1"
       >
         <ReactMarkdown>{markdown ?? ''}</ReactMarkdown>
