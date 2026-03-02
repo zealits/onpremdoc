@@ -1,0 +1,1 @@
+{"timestamp": "2026-03-02T08:28:25.571261Z", "step": "vectorization", "phase": "vectorization", "document_id": "0fe939cf-8ad3-4dfa-a388-e6841dcf94f9", "input_tokens": 8211, "output_tokens": 0, "embedding_tokens": 8211, "total_tokens": 16422, "model": "nomic-embed-text+llama3.1:8b", "cost_estimate_usd": 0.0, "extra": {"total_chunks": 13, "truncated_chunks": 0}}

@@ -8,6 +8,28 @@ const SUGGESTED = [
 ]
 
 const CITATION_REGEX = /\[C(\d+)\]/g
+const CHAT_STORAGE_KEY = 'onpremdoc-chat'
+
+function getStoredMessages(documentId) {
+  if (!documentId) return []
+  try {
+    const raw = localStorage.getItem(`${CHAT_STORAGE_KEY}-${documentId}`)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function saveMessages(documentId, messages) {
+  if (!documentId || !messages?.length) return
+  try {
+    localStorage.setItem(`${CHAT_STORAGE_KEY}-${documentId}`, JSON.stringify(messages))
+  } catch {
+    // quota exceeded or other
+  }
+}
 
 /** Rehype plugin: replace [C9], [C2] etc. in text nodes with inline <span dataCitation="9"> so they render as clickable. */
 function rehypeCitationSpans() {
@@ -72,6 +94,16 @@ function ChatPanel({ documentId, documentReady, onHighlightChunk }) {
   const [input, setInput] = useState('')
   const bottomRef = useRef(null)
   const queryMutation = useQueryDocument(documentId)
+
+  // Load chat history from localStorage when document changes (or on mount)
+  useEffect(() => {
+    setMessages(getStoredMessages(documentId))
+  }, [documentId])
+
+  // Persist chat history whenever messages change
+  useEffect(() => {
+    saveMessages(documentId, messages)
+  }, [documentId, messages])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
