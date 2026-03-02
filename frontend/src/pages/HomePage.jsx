@@ -42,13 +42,39 @@ export default function HomePage() {
 
   return (
     <div className="flex-1 flex items-center justify-center px-6 py-10">
-      <div className="max-w-lg w-full">
-        <h1 className="text-3xl font-semibold tracking-tight text-slate-50 mb-3">
-          Chat with your <span className="bg-gradient-to-r from-indigo-400 to-violet-400 bg-clip-text text-transparent">policy, contract, or report</span>
-        </h1>
-        <p className="text-sm text-slate-300 mb-6 max-w-md">
-          Upload a PDF and get precise, citation-backed answers in seconds. No copy‑paste, no manual searching.
-        </p>
+      <div className="w-full max-w-5xl grid gap-10 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] items-center">
+        <div className="space-y-6">
+          <div className="inline-flex items-center gap-2 rounded-full border border-slate-700/80 bg-slate-900/70 px-3 py-1 text-[11px] font-medium text-slate-300 shadow-sm">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            AI answers grounded in your own PDFs
+          </div>
+          <div>
+            <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight text-slate-50 mb-3">
+              Chat with your{' '}
+              <span className="bg-gradient-to-r from-indigo-400 to-violet-400 bg-clip-text text-transparent">
+                policy, contract, or report
+              </span>
+            </h1>
+            <p className="text-sm sm:text-base text-slate-300 max-w-xl">
+              Upload a PDF and get precise, citation-backed answers in seconds. Follow citations back into the original
+              pages whenever you need to double‑check.
+            </p>
+          </div>
+          <dl className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs sm:text-sm text-slate-300">
+            <div className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-3">
+              <dt className="mb-1 font-medium text-slate-100">Legal & policy docs</dt>
+              <dd className="text-slate-400">Terms, policies, contracts, and disclosures.</dd>
+            </div>
+            <div className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-3">
+              <dt className="mb-1 font-medium text-slate-100">Instant answers</dt>
+              <dd className="text-slate-400">Ask questions in plain language, no setup.</dd>
+            </div>
+            <div className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-3">
+              <dt className="mb-1 font-medium text-slate-100">Cited sources</dt>
+              <dd className="text-slate-400">Every answer links back to your document.</dd>
+            </div>
+          </dl>
+        </div>
         <div
           role="button"
           tabIndex={0}
@@ -57,8 +83,10 @@ export default function HomePage() {
           onDrop={onDrop}
           onDragOver={onDragOver}
           onDragLeave={onDragLeave}
-          className={`relative border border-dashed rounded-2xl p-10 bg-slate-900/70 transition-all ${
-            drag ? 'border-indigo-400/80 bg-slate-900/90 shadow-[0_0_0_1px_rgba(129,140,248,0.6),0_18px_45px_rgba(15,23,42,0.7)]' : 'border-slate-700/80 shadow-[0_16px_40px_rgba(15,23,42,0.7)]'
+          className={`relative border border-dashed rounded-2xl p-8 sm:p-10 bg-slate-950/80 transition-all ${
+            drag
+              ? 'border-indigo-400/80 bg-slate-950 shadow-[0_0_0_1px_rgba(129,140,248,0.7),0_22px_55px_rgba(15,23,42,0.9)]'
+              : 'border-slate-700/80 shadow-[0_18px_50px_rgba(15,23,42,0.9)]'
           } ${upload.isPending ? 'pointer-events-none opacity-70' : 'cursor-pointer'}`}
           aria-label="Drop PDF or click to upload"
         >
@@ -71,22 +99,47 @@ export default function HomePage() {
             aria-hidden
           />
           {upload.isPending ? (
-            <p className="text-slate-300">Uploading…</p>
+            <div className="flex flex-col items-center justify-center gap-3 text-slate-300 text-sm">
+              <div className="w-9 h-9 rounded-full border-2 border-indigo-400/60 border-t-transparent animate-spin" />
+              <p>Uploading your PDF…</p>
+            </div>
           ) : (
-            <>
-              <p className="text-slate-400 mb-3 text-sm">Drop a PDF here or</p>
-              <span className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-500 text-sm font-medium text-white shadow-sm hover:shadow-md hover:brightness-105">
-                Upload
-                <span className="text-xs text-indigo-100/90">.pdf up to 20MB</span>
-              </span>
-            </>
+            <div className="flex flex-col items-center justify-center gap-4 text-center">
+              <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-900 border border-slate-700 text-indigo-300">
+                <svg
+                  className="h-6 w-6"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <path
+                    d="M12 16V4M12 4L8 8M12 4L16 8M5 16V18.5C5 19.8807 6.11929 21 7.5 21H16.5C17.8807 21 19 19.8807 19 18.5V16"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </div>
+              <div className="space-y-1">
+                <p className="text-slate-100 text-sm sm:text-base font-medium">Drop a PDF to start chatting</p>
+                <p className="text-slate-400 text-xs sm:text-sm">We’ll extract text locally and keep citations aligned.</p>
+              </div>
+              <div className="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto">
+                <span className="text-slate-400 text-xs sm:text-sm">Drop file here or</span>
+                <span className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-500 text-sm font-medium text-white shadow-sm hover:shadow-md hover:brightness-105">
+                  Upload PDF
+                  <span className="text-[11px] text-indigo-100/90">.pdf up to 20MB</span>
+                </span>
+              </div>
+            </div>
+          )}
+          {upload.isError && (
+            <p className="mt-4 text-sm text-rose-400 text-center" role="alert">
+              {upload.error?.message || 'Upload failed'}
+            </p>
           )}
         </div>
-        {upload.isError && (
-          <p className="mt-4 text-sm text-rose-400" role="alert">
-            {upload.error?.message || 'Upload failed'}
-          </p>
-        )}
       </div>
     </div>
   )
