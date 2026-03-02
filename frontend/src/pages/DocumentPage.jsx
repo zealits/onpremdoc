@@ -66,12 +66,12 @@ export default function DocumentPage() {
 
   return (
     <div className="flex-1 flex flex-col h-full min-h-0">
-      <header className="shrink-0 border-b border-slate-800 bg-slate-900/70 backdrop-blur flex items-center justify-between gap-3 px-5 py-3 text-slate-100">
+      <header className="doc-header shrink-0 border-b border-slate-800 bg-slate-900/70 backdrop-blur flex items-center justify-between gap-3 px-5 py-3">
         <div className="min-w-0">
           <div className="font-medium truncate text-sm sm:text-base">
             {getDocumentDisplayName(doc, documentId)}
           </div>
-          <div className="mt-0.5 text-[11px] text-slate-400 truncate">
+          <div className="mt-0.5 text-[11px] theme-sidebar-muted truncate">
             {`ID: \`${documentId}\``}
           </div>
         </div>

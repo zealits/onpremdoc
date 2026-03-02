@@ -93,7 +93,7 @@ export default function MarkdownViewer({ documentId, activeHighlight, onClose })
   const markdownUrl = getMarkdownUrl(documentId)
 
   return (
-    <div className="flex flex-col h-full min-h-0 bg-slate-950/40 border-r border-slate-800">
+    <div className="flex flex-col h-full min-h-0 theme-main border-r border-slate-800">
       <div className="flex items-center gap-2 px-3 py-2 bg-slate-900/80 border-b border-slate-800 shrink-0">
         {typeof onClose === 'function' && (
           <button
@@ -118,7 +118,7 @@ export default function MarkdownViewer({ documentId, activeHighlight, onClose })
       <div
         ref={contentRef}
         data-markdown-root
-        className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 text-slate-50 column-scroll [&_h1]:text-2xl [&_h1]:font-semibold [&_h1]:mt-4 [&_h2]:text-xl [&_h2]:font-semibold [&_h2]:mt-3 [&_h3]:text-lg [&_h3]:font-medium [&_h3]:mt-2 [&_p]:my-2 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-6 [&_table]:border [&_table]:border-slate-700 [&_th]:border [&_th]:border-slate-700 [&_th]:px-2 [&_th]:py-1 [&_td]:border [&_td]:border-slate-700 [&_td]:px-2 [&_td]:py-1"
+        className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 column-scroll markdown-body [&_h1]:text-2xl [&_h1]:font-semibold [&_h1]:mt-4 [&_h2]:text-xl [&_h2]:font-semibold [&_h2]:mt-3 [&_h3]:text-lg [&_h3]:font-medium [&_h3]:mt-2 [&_p]:my-2 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-6 [&_table]:border [&_table]:border-slate-300 [&_th]:border [&_th]:border-slate-300 [&_th]:px-2 [&_th]:py-1 [&_td]:border [&_td]:border-slate-200 [&_td]:px-2 [&_td]:py-1"
       >
         <ReactMarkdown>{markdown ?? ''}</ReactMarkdown>
       </div>

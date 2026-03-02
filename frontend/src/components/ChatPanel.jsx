@@ -171,11 +171,11 @@ function ChatPanel({ documentId, documentReady, onHighlightChunk }) {
   }
 
   return (
-    <div className="flex flex-col h-full min-h-0 px-3 py-3 sm:px-4 sm:py-4 border-l border-slate-800">
-      <div className="flex flex-col h-full min-h-0 rounded-2xl bg-slate-950/50 shadow-[0_18px_60px_rgba(15,23,42,0.9)] border border-slate-800/80">
+    <div className="chat-shell flex flex-col h-full min-h-0 px-3 py-3 sm:px-4 sm:py-4 border-l border-slate-800">
+      <div className="flex flex-col h-full min-h-0 rounded-2xl theme-card shadow-[0_18px_60px_rgba(15,23,42,0.25)]">
         <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-4 pt-4 pb-2 space-y-4 column-scroll">
         {messages.length === 0 && (
-          <div className="text-slate-300 text-sm space-y-3">
+          <div className="text-sm space-y-3">
             <p className="font-medium">Ask anything about this document.</p>
             <div className="flex flex-wrap gap-2">
               {SUGGESTED.map((q) => (
@@ -183,7 +183,7 @@ function ChatPanel({ documentId, documentReady, onHighlightChunk }) {
                   key={q}
                   type="button"
                   onClick={() => send(q)}
-                  className="px-3 py-2 rounded-full border border-indigo-500/40 bg-indigo-500/5 text-indigo-200 text-xs sm:text-sm hover:bg-indigo-500/15 hover:border-indigo-400/70 transition-colors"
+                  className="px-3 py-2 rounded-full border border-indigo-200 bg-indigo-50 text-indigo-700 text-xs sm:text-sm hover:bg-indigo-100 hover:border-indigo-300 transition-colors"
                 >
                   {q}
                 </button>
@@ -200,7 +200,7 @@ function ChatPanel({ documentId, documentReady, onHighlightChunk }) {
               className={`max-w-[85%] rounded-2xl px-3.5 py-2.5 text-sm shadow-sm ${
                 msg.role === 'user'
                   ? 'bg-gradient-to-r from-indigo-500 to-violet-500 text-white'
-                  : 'bg-slate-900/80 text-slate-100 border border-slate-700/80'
+                  : 'bg-white text-slate-900 border border-slate-200'
               }`}
             >
               {msg.role === 'assistant' ? (
@@ -241,7 +241,7 @@ function ChatPanel({ documentId, documentReady, onHighlightChunk }) {
                             key={j}
                             type="button"
                             onClick={() => send(question)}
-                            className="px-3 py-1.5 rounded-full border border-indigo-500/40 text-indigo-200 text-xs sm:text-sm bg-indigo-500/5 hover:bg-indigo-500/15 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="px-3 py-1.5 rounded-full border border-indigo-200 bg-indigo-50 text-indigo-700 text-xs sm:text-sm hover:bg-indigo-100 hover:border-indigo-300 disabled:opacity-50 disabled:cursor-not-allowed"
                             disabled={queryMutation.isPending}
                           >
                             {question}
