@@ -1,6 +1,25 @@
 import { Outlet, Link, useParams } from 'react-router-dom'
 import { useDocuments } from '../api/hooks'
 
+function getDocumentDisplayName(doc) {
+  if (!doc) return ''
+  // If backend already sends a nice name, use it
+  if (doc.name && doc.name !== doc.document_id) return doc.name
+  // Otherwise, try to derive from markdown or pdf path
+  const path =
+    doc.markdown_path ||
+    doc.page_mapping_path ||
+    doc.confidence_path ||
+    ''
+  if (path) {
+    const parts = String(path).split(/[\\/]/)
+    const file = parts[parts.length - 1] || ''
+    const withoutExt = file.replace(/\.(md|pdf)$/i, '')
+    if (withoutExt) return withoutExt
+  }
+  return doc.document_id
+}
+
 export default function Layout() {
   return (
     <div className="flex h-screen bg-gray-50">
@@ -45,20 +64,21 @@ function DocumentList() {
       </div>
     )
   }
-
   return (
     <ul className="space-y-0.5">
       {documents.map((doc) => (
         <li key={doc.document_id}>
           <Link
             to={`/documents/${doc.document_id}`}
-            className={`block px-3 py-2 rounded-lg text-sm truncate ${
+            className={`block px-3 py-2 rounded-lg text-sm ${
               doc.document_id === documentId
                 ? 'bg-indigo-100 text-indigo-800 font-medium'
                 : 'text-gray-700 hover:bg-gray-100'
             }`}
           >
-            {doc.name || doc.document_id}
+            <div className="flex flex-col">
+              <span className="truncate">{getDocumentDisplayName(doc)}</span>
+            </div>
           </Link>
         </li>
       ))}

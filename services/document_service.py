@@ -64,6 +64,8 @@ def get_document_info(document_id: str) -> Optional[Dict[str, Any]]:
     if not doc_path.exists():
         return None
 
+    # Detect primary artifacts
+    pdf_files = list(doc_path.glob("*.pdf"))
     md_files = list(doc_path.glob("*.md"))
     md_path = md_files[0] if md_files else None
 
@@ -146,9 +148,20 @@ def get_document_info(document_id: str) -> Optional[Dict[str, Any]]:
             doc_summary = None
             suggested_queries = None
 
+    # Prefer a human-friendly name derived from the original PDF filename
+    # (e.g., "HDFC-Life-Cancer-Care-101N106V04-Policy-Document (7)").
+    # If the PDF is missing (older documents), fall back to the markdown stem.
+    # If that is also missing, use the folder name / document ID.
+    if pdf_files:
+        display_name = pdf_files[0].stem
+    elif md_path:
+        display_name = md_path.stem
+    else:
+        display_name = doc_path.name
+
     return {
         "document_id": document_id,
-        "name": doc_path.name,
+        "name": display_name,
         "status": status,
         "markdown_path": str(md_path) if md_path else None,
         "page_mapping_path": str(page_mapping_path) if page_mapping_path else None,

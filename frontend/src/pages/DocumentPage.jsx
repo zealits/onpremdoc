@@ -4,6 +4,23 @@ import { useDocument, useVectorize } from '../api/hooks'
 import MarkdownViewer from '../components/MarkdownViewer'
 import ChatPanel from '../components/ChatPanel'
 
+function getDocumentDisplayName(doc, documentId) {
+  if (!doc) return documentId || ''
+  if (doc.name && doc.name !== documentId) return doc.name
+  const path =
+    doc.markdown_path ||
+    doc.page_mapping_path ||
+    doc.confidence_path ||
+    ''
+  if (path) {
+    const parts = String(path).split(/[\\/]/)
+    const file = parts[parts.length - 1] || ''
+    const withoutExt = file.replace(/\.(md|pdf)$/i, '')
+    if (withoutExt) return withoutExt
+  }
+  return documentId || ''
+}
+
 export default function DocumentPage() {
   const { documentId } = useParams()
   const { data: doc, isLoading, error } = useDocument(documentId)
@@ -46,11 +63,18 @@ export default function DocumentPage() {
 
   return (
     <div className="flex-1 flex flex-col h-full">
-      <header className="shrink-0 border-b bg-white px-4 py-2 text-gray-700 font-medium flex items-center gap-2">
-        <span className="truncate">{doc?.name || documentId}</span>
+      <header className="shrink-0 border-b bg-white px-4 py-2 text-gray-700 flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="font-medium truncate">
+            {getDocumentDisplayName(doc, documentId)}
+          </div>
+          <div className="mt-0.5 text-xs text-gray-500 truncate">
+            {`ID: \`${documentId}\``}
+          </div>
+        </div>
         {doc?.status && (
           <span
-            className={`text-xs px-2 py-0.5 rounded ${
+            className={`text-xs px-2 py-0.5 rounded whitespace-nowrap ${
               ready ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'
             }`}
           >
