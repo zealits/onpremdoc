@@ -93,24 +93,24 @@ export default function MarkdownViewer({ documentId, activeHighlight, onClose })
   const markdownUrl = getMarkdownUrl(documentId)
 
   return (
-    <div className="flex flex-col h-full min-h-0 bg-gray-100">
-      <div className="flex items-center gap-2 px-2 py-1.5 bg-white border-b border-gray-200 shrink-0">
+    <div className="flex flex-col h-full min-h-0 bg-slate-950/40 border-r border-slate-800">
+      <div className="flex items-center gap-2 px-3 py-2 bg-slate-900/80 border-b border-slate-800 shrink-0">
         {typeof onClose === 'function' && (
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
+            className="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium text-slate-400 hover:bg-slate-800 hover:text-slate-100 transition-colors"
           >
             <span className="text-base leading-none mr-1">&times;</span>
             <span className="hidden sm:inline">Close</span>
           </button>
         )}
-        <span className="text-xs text-gray-400">Document preview</span>
+        <span className="text-xs text-slate-400">Document preview</span>
         <a
           href={markdownUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="ml-auto text-sm text-indigo-600 hover:underline"
+          className="ml-auto text-xs sm:text-sm text-indigo-300 hover:text-indigo-200 hover:underline"
         >
           Open in new tab
         </a>
@@ -118,7 +118,7 @@ export default function MarkdownViewer({ documentId, activeHighlight, onClose })
       <div
         ref={contentRef}
         data-markdown-root
-        className="flex-1 min-h-0 overflow-auto p-4 text-gray-800 [&_h1]:text-2xl [&_h1]:font-semibold [&_h1]:mt-4 [&_h2]:text-xl [&_h2]:font-semibold [&_h2]:mt-3 [&_h3]:text-lg [&_h3]:font-medium [&_h3]:mt-2 [&_p]:my-2 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-6 [&_table]:border [&_table]:border-gray-300 [&_th]:border [&_th]:border-gray-300 [&_th]:px-2 [&_th]:py-1 [&_td]:border [&_td]:border-gray-300 [&_td]:px-2 [&_td]:py-1"
+        className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 text-slate-50 column-scroll [&_h1]:text-2xl [&_h1]:font-semibold [&_h1]:mt-4 [&_h2]:text-xl [&_h2]:font-semibold [&_h2]:mt-3 [&_h3]:text-lg [&_h3]:font-medium [&_h3]:mt-2 [&_p]:my-2 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-6 [&_table]:border [&_table]:border-slate-700 [&_th]:border [&_th]:border-slate-700 [&_th]:px-2 [&_th]:py-1 [&_td]:border [&_td]:border-slate-700 [&_td]:px-2 [&_td]:py-1"
       >
         <ReactMarkdown>{markdown ?? ''}</ReactMarkdown>
       </div>

@@ -41,13 +41,13 @@ export default function HomePage() {
   }
 
   return (
-    <div className="flex-1 flex items-center justify-center p-8">
-      <div className="text-center max-w-lg w-full">
-        <h1 className="text-2xl font-bold text-gray-800 mb-2">
-          Chat with your PDF
+    <div className="flex-1 flex items-center justify-center px-6 py-10">
+      <div className="max-w-lg w-full">
+        <h1 className="text-3xl font-semibold tracking-tight text-slate-50 mb-3">
+          Chat with your <span className="bg-gradient-to-r from-indigo-400 to-violet-400 bg-clip-text text-transparent">policy, contract, or report</span>
         </h1>
-        <p className="text-gray-600 mb-6">
-          Drop your PDF here or upload to get started.
+        <p className="text-sm text-slate-300 mb-6 max-w-md">
+          Upload a PDF and get precise, citation-backed answers in seconds. No copy‑paste, no manual searching.
         </p>
         <div
           role="button"
@@ -57,8 +57,8 @@ export default function HomePage() {
           onDrop={onDrop}
           onDragOver={onDragOver}
           onDragLeave={onDragLeave}
-          className={`border-2 border-dashed rounded-xl p-12 bg-white transition-colors ${
-            drag ? 'border-indigo-400 bg-indigo-50' : 'border-gray-300'
+          className={`relative border border-dashed rounded-2xl p-10 bg-slate-900/70 transition-all ${
+            drag ? 'border-indigo-400/80 bg-slate-900/90 shadow-[0_0_0_1px_rgba(129,140,248,0.6),0_18px_45px_rgba(15,23,42,0.7)]' : 'border-slate-700/80 shadow-[0_16px_40px_rgba(15,23,42,0.7)]'
           } ${upload.isPending ? 'pointer-events-none opacity-70' : 'cursor-pointer'}`}
           aria-label="Drop PDF or click to upload"
         >
@@ -71,18 +71,19 @@ export default function HomePage() {
             aria-hidden
           />
           {upload.isPending ? (
-            <p className="text-gray-600">Uploading…</p>
+            <p className="text-slate-300">Uploading…</p>
           ) : (
             <>
-              <p className="text-gray-500 mb-2">Drop a file or</p>
-              <span className="inline-block px-4 py-2 rounded-lg bg-indigo-600 text-white font-medium">
+              <p className="text-slate-400 mb-3 text-sm">Drop a PDF here or</p>
+              <span className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-500 text-sm font-medium text-white shadow-sm hover:shadow-md hover:brightness-105">
                 Upload
+                <span className="text-xs text-indigo-100/90">.pdf up to 20MB</span>
               </span>
             </>
           )}
         </div>
         {upload.isError && (
-          <p className="mt-4 text-sm text-red-600" role="alert">
+          <p className="mt-4 text-sm text-rose-400" role="alert">
             {upload.error?.message || 'Upload failed'}
           </p>
         )}
