@@ -986,6 +986,177 @@ Now provide the summary and key points:"""
         key_points = [s.strip() + "." for s in sentences if len(s.strip()) > 20]
         return fallback_summary, key_points
 
+
+def summarize_page_brief(
+    page_number: int,
+    page_content: str,
+    llm: Any,
+) -> str:
+    """
+    Very short page summary (~50 words max) for page-level overview.
+    Single LLM call, no classification label or key points.
+    """
+    # Truncate content for safety and token efficiency
+    text_for_llm, _ = token_tracker.check_llm_limit(page_content[:3000], max_tokens=800)
+
+    prompt = f"""You are summarizing page {page_number} of a document.
+
+Page content:
+{text_for_llm}
+
+Write ONE concise summary of this page in AT MOST 50 words.
+
+Rules:
+- Do NOT list bullet points.
+- Do NOT include headings or section titles.
+- Write 1–3 short sentences, total length <= 50 words.
+- Return ONLY the summary text, no prefixes or labels."""
+
+    try:
+        response = llm.invoke(prompt)
+        response_text = (getattr(response, "content", None) or str(response)).strip()
+
+        # Take first line/paragraph as summary candidate
+        summary = response_text.split("\n")[0].strip() or response_text.strip()
+
+        # Hard-enforce ~50-word cap
+        words = summary.split()
+        if len(words) > 50:
+            summary = " ".join(words[:50]).rstrip(" ,;") + "..."
+
+        if not summary:
+            summary = "This page contains document content. Please refer to the full document for details."
+
+        return summary
+    except Exception as e:
+        logger.warning(f"Error creating brief summary for page {page_number}: {e}")
+        # Fallback: naive first-sentence summary
+        sentences = page_content.split(". ")
+        rough = sentences[0] if sentences else page_content[:200]
+        words = rough.split()
+        if len(words) > 50:
+            rough = " ".join(words[:50]).rstrip(" ,;") + "..."
+        return rough or "This page contains document content. Please refer to the full document for details."
+
+
+def classify_and_summarize_page(
+    page_number: int,
+    page_content: str,
+    llm: Any,
+) -> Tuple[str, str, List[str]]:
+    """
+    Single LLM call that returns both:
+    - a short page classification label (1–4 words)
+    - a concise summary + 3–5 key points
+    """
+    # Truncate and count tokens once for combined task
+    text_for_llm, _ = token_tracker.check_llm_limit(page_content[:4000], max_tokens=1200)
+
+    prompt = f"""You are analyzing page {page_number} of a document.
+
+Page content:
+{text_for_llm}
+
+Your tasks:
+1. Decide what this page is mainly about and give a SHORT LABEL (1-4 words).
+2. Write a concise summary of the page in 2-4 sentences.
+3. List 3-5 key points or important facts from this page.
+
+Reply in EXACTLY this format:
+CLASSIFICATION: [short label here]
+
+SUMMARY: [your summary here]
+
+KEY_POINTS:
+- [first key point]
+- [second key point]
+- [third key point]
+[add more bullet points if helpful]"""
+
+    try:
+        response = llm.invoke(prompt)
+        response_text = (getattr(response, "content", None) or str(response)).strip()
+
+        classification = "Unknown"
+        summary = ""
+        key_points: List[str] = []
+
+        # Parse classification
+        if "CLASSIFICATION:" in response_text.upper():
+            for line in response_text.split("\n"):
+                if "CLASSIFICATION:" in line.upper():
+                    cls_val = line.split(":", 1)[-1].strip()
+                    classification = cls_val
+                    break
+
+        # Reuse the summary/key-point parsing pattern from summarize_page_for_overview
+        if "SUMMARY:" in response_text:
+            summary_part = response_text.split("SUMMARY:")[1]
+            if "KEY_POINTS:" in summary_part:
+                summary = summary_part.split("KEY_POINTS:")[0].strip()
+                key_points_part = summary_part.split("KEY_POINTS:")[1]
+            else:
+                summary = summary_part.strip()
+                key_points_part = ""
+        else:
+            lines = response_text.split("\n")
+            summary = lines[0] if lines else response_text[:200]
+            key_points_part = response_text
+
+        if "KEY_POINTS:" in response_text:
+            key_points_section = response_text.split("KEY_POINTS:")[1]
+        else:
+            key_points_section = key_points_part
+
+        for line in key_points_section.split("\n"):
+            line = line.strip()
+            if line.startswith("-") or line.startswith("*"):
+                point = line.lstrip("-* ").strip()
+                if point:
+                    key_points.append(point)
+            elif line and not line.startswith("SUMMARY:") and not line.upper().startswith("CLASSIFICATION:"):
+                key_points.append(line)
+
+        if not key_points:
+            sentences = summary.split(". ")
+            key_points = [s.strip() + "." for s in sentences[:5] if s.strip()]
+
+        # Clean classification similar to classify_page_with_llm
+        classification = classification.split("\n")[0].strip()
+        classification = re.sub(r'^[:\-\"\']+\s*', '', classification)
+        classification = re.sub(r'\s*[:\-\"\']+$', '', classification)
+        prefixes_to_remove = [
+            "label:",
+            "classification:",
+            "category:",
+            "page type:",
+            "this page is:",
+            "the page is:",
+        ]
+        for prefix in prefixes_to_remove:
+            if classification.lower().startswith(prefix):
+                classification = classification[len(prefix):].strip()
+                classification = re.sub(r'^[:\-\"\']+\s*', '', classification)
+
+        if not classification or len(classification) < 2:
+            classification = "Unknown"
+        if len(classification) > 50:
+            classification = classification[:47] + "..."
+
+        summary = summary.strip()
+        if not summary:
+            summary = "This page contains document content. Please refer to the full document for details."
+
+        return classification, summary, key_points[:5]
+    except Exception as e:
+        logger.warning(f"Error classifying and summarizing page {page_number}: {e}")
+        # Fallbacks
+        fallback_summary = "This page contains document content. Please refer to the document for details."
+        sentences = page_content.split(". ")[:5]
+        key_points = [s.strip() + "." for s in sentences if len(s.strip()) > 20]
+        return "Unknown", fallback_summary, key_points
+
+
 def classify_pages(chunks: List[Document], page_mapping: Optional[Dict[str, Any]], llm: Any) -> Dict[int, str]:
     """Classify all pages based on their chunk content"""
     if not page_mapping:
@@ -1229,9 +1400,9 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
     json_output_path = plan_e_dir / f"{doc_stem}_vector_mapping.json"
     graph_output_path = plan_e_dir / f"{doc_stem}_document_graph.json"
     
-    # Initialize LLM and embeddings via inference_config (Ollama or Hugging Face)
-    logger.info("Initializing LLM and embeddings...")
-    llm = get_llm(temperature=0.3)
+    # Initialize embeddings only (no LLM during vectorization for speed/cost)
+    logger.info("Initializing embeddings (LLM disabled for vectorization)...")
+    llm = None  # kept for type compatibility; not used below
     embeddings = get_embeddings()
     
     # Initialize vector store
@@ -1341,13 +1512,13 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
     logger.info(f"  - Total sections in document: {len(structure['sections'])}")
     logger.info(f"Created {section_edges_added} parent-child section edges")
     
-    # Classify pages if page mapping is available
+    # Optional: page-level metadata (LLM-based classification/summaries) is disabled for speed.
+    # We still load page_mapping (for page numbers in chunks), but we do NOT call the LLM here.
     page_mapping = state.get("page_mapping")
-    page_classifications = {}
+    page_classifications: Dict[int, str] = {}
+    page_summaries_for_file: Dict[int, Dict[str, Any]] = {}
     if page_mapping:
-        page_classifications = classify_pages(chunks, page_mapping, llm)
-        state["page_classifications"] = page_classifications
-        logger.info(f"Page classification complete: {len(page_classifications)} pages classified")
+        logger.info("LLM-based page classification/summaries are disabled; skipping page-level LLM calls.")
     
     # Process chunks
     json_mapping = []
@@ -1637,12 +1808,8 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
     
     document_graph.save(graph_output_path)
     
-    # Save page classifications if available
-    if page_classifications:
-        classifications_path = plan_e_dir / f"{doc_stem}_page_classifications.json"
-        with open(classifications_path, 'w', encoding='utf-8') as f:
-            json.dump(page_classifications, f, indent=2, ensure_ascii=False)
-        logger.info(f"Page classifications saved to: {classifications_path}")
+    # Page-level summaries/classifications JSON is no longer generated when LLM is disabled.
+    # Existing documents may still have *_page_classifications.json from earlier runs.
     
     state['processed_chunks'] = processed_chunks
     state['vector_store'] = vector_store

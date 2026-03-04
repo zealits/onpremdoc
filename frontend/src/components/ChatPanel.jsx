@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { useQueryDocument } from '../api/hooks'
+import { queryDocumentStream } from '../api/client'
 
 const SUGGESTED = [
   'What is this document about?',
@@ -93,7 +93,9 @@ function ChatPanel({ documentId, documentReady, onHighlightChunk }) {
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const bottomRef = useRef(null)
-  const queryMutation = useQueryDocument(documentId)
+  const [isStreaming, setIsStreaming] = useState(false)
+  const activeAssistantIndexRef = useRef(null)
+  const abortControllerRef = useRef(null)
 
   // Load chat history from localStorage when document changes (or on mount)
   useEffect(() => {
@@ -113,23 +115,65 @@ function ChatPanel({ documentId, documentReady, onHighlightChunk }) {
     const q = (text || input).trim()
     if (!q || !documentId) return
     setInput('')
+
+    // Cancel any in-flight stream
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+      abortControllerRef.current = null
+    }
+
     setMessages((m) => [...m, { role: 'user', content: q }])
-    try {
-      const res = await queryMutation.mutateAsync({ query: q })
-      setMessages((m) => [
+
+    // Create a placeholder assistant message we will stream into
+    let assistantIndex = null
+    setMessages((m) => {
+      const next = [
         ...m,
         {
           role: 'assistant',
-          content: res.answer,
-          chunks: res.chunks || [],
-          next_questions: res.next_questions || [],
+          content: '',
+          chunks: [],
+          next_questions: [],
         },
-      ])
+      ]
+      assistantIndex = next.length - 1
+      activeAssistantIndexRef.current = assistantIndex
+      return next
+    })
+
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+    setIsStreaming(true)
+
+    try {
+      await queryDocumentStream(documentId, q, true, (chunk) => {
+        setMessages((prev) => {
+          const idx = activeAssistantIndexRef.current
+          if (idx == null || idx < 0 || idx >= prev.length) return prev
+          const copy = [...prev]
+          const msg = { ...copy[idx] }
+
+          if (chunk.type === 'meta') {
+            msg.chunks = chunk.chunks || []
+            msg.next_questions = chunk.next_questions || []
+          } else if (chunk.type === 'answer_chunk') {
+            msg.content = (msg.content || '') + (chunk.delta || '')
+          } else if (chunk.type === 'error') {
+            msg.content = `Error: ${chunk.message || 'Request failed'}`
+          }
+
+          copy[idx] = msg
+          return copy
+        })
+      })
     } catch (err) {
       setMessages((m) => [
         ...m,
         { role: 'assistant', content: `Error: ${err?.message || 'Request failed'}` },
       ])
+    } finally {
+      setIsStreaming(false)
+      abortControllerRef.current = null
     }
   }
 
@@ -242,7 +286,7 @@ function ChatPanel({ documentId, documentReady, onHighlightChunk }) {
                             type="button"
                             onClick={() => send(question)}
                             className="px-3 py-1.5 rounded-full border border-indigo-200 bg-indigo-50 text-indigo-700 text-xs sm:text-sm hover:bg-indigo-100 hover:border-indigo-300 disabled:opacity-50 disabled:cursor-not-allowed"
-                            disabled={queryMutation.isPending}
+                            disabled={isStreaming}
                           >
                             {question}
                           </button>
@@ -257,7 +301,7 @@ function ChatPanel({ documentId, documentReady, onHighlightChunk }) {
             </div>
           </div>
         ))}
-        {queryMutation.isPending && (
+        {isStreaming && (
           <div className="flex justify-start">
             <div className="bg-slate-900/80 border border-slate-700/80 rounded-2xl px-3 py-2 text-sm text-slate-400">
               …
@@ -274,12 +318,12 @@ function ChatPanel({ documentId, documentReady, onHighlightChunk }) {
             onChange={(e) => setInput(e.target.value)}
             placeholder="Ask any question…"
             className="flex-1 px-4 py-2.5 rounded-xl bg-slate-900/70 border border-slate-700/80 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/80 focus:border-transparent"
-            disabled={queryMutation.isPending}
+            disabled={isStreaming}
             aria-label="Ask a question"
           />
           <button
             type="submit"
-            disabled={!input.trim() || queryMutation.isPending}
+            disabled={!input.trim() || isStreaming}
             className="inline-flex items-center justify-center px-4 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-500 text-white font-medium shadow-sm hover:shadow-md hover:brightness-105 disabled:opacity-60 disabled:cursor-not-allowed"
             aria-label="Send"
           >

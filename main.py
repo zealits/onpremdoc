@@ -25,7 +25,7 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 # Import modules
@@ -242,7 +242,10 @@ async def lifespan(app: FastAPI):
     
     # Cleanup on shutdown
     logger.info("Shutting down application...")
-    _loaded_agents.clear()
+    try:
+        document_service.clear_loaded_agents()
+    except Exception as e:
+        logger.warning(f"Failed to clear loaded agents on shutdown: {e}")
 
 
 # ---------------- FASTAPI APP ----------------
@@ -285,6 +288,82 @@ def load_agent_for_document(document_id: str) -> Dict[str, Any]:
         return document_service.load_agent_for_document(document_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+def _chunk_markdown(text: str, max_chunk_chars: int = 400) -> List[str]:
+    """
+    Split markdown text into reasonably sized chunks for streaming.
+    Prefer splitting on paragraph boundaries to keep formatting clean.
+    """
+    if not text:
+        return []
+
+    paragraphs = text.split("\n\n")
+    chunks: List[str] = []
+    current: List[str] = []
+    current_len = 0
+
+    for para in paragraphs:
+        # Include the paragraph separator when joining
+        para_with_sep = para + "\n\n"
+        if current_len + len(para_with_sep) > max_chunk_chars and current:
+            chunks.append("".join(current))
+            current = [para_with_sep]
+            current_len = len(para_with_sep)
+        else:
+            current.append(para_with_sep)
+            current_len += len(para_with_sep)
+
+    if current:
+        chunks.append("".join(current))
+
+    return chunks
+
+
+def _extract_stream_delta(chunk: Any) -> str:
+    """
+    Extract just the text delta from a streaming LLM chunk.
+    Handles common LangChain / OpenAI-style chunk shapes and
+    avoids dumping reprs with response_metadata, tool_calls, etc.
+    """
+    # 1) Prefer structured dump if available (LangChain message chunks are pydantic models)
+    data = None
+    if hasattr(chunk, "model_dump"):
+        try:
+            data = chunk.model_dump()
+        except Exception:
+            data = None
+    if isinstance(data, dict) and "content" in data:
+        content = data.get("content")
+    else:
+        content = getattr(chunk, "content", None)
+
+    # 2) Handle common shapes for `.content`
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        # Some providers return a list of content parts
+        parts: List[str] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                # OpenAI-style: {"type": "text", "text": "..."}
+                if part.get("type") == "text" and isinstance(part.get("text"), str):
+                    parts.append(part["text"])
+        return "".join(parts)
+
+    # 3) Raw dict response (OpenAI HTTP-like shapes)
+    if isinstance(chunk, dict):
+        choices = chunk.get("choices") or []
+        if choices:
+            delta = choices[0].get("delta") or {}
+            if isinstance(delta, dict):
+                if isinstance(delta.get("content"), str):
+                    return delta["content"]
+        return ""
+
+    return ""
 
 
 # ---------------- API ENDPOINTS ----------------
@@ -478,36 +557,34 @@ def process_pdf_background(pdf_path: str, document_id: str):
     except Exception as e:
         logger.error(f"Error processing PDF {pdf_path}: {e}", exc_info=True)
 
-
-@app.post("/vectorize/{document_id}", response_model=VectorizeResponse, tags=["Processing"])
+@app.post("/vectorize/{document_id}")
 async def vectorize_document(
-    document_id: str = PathParam(..., description="Document ID"),
-    background_tasks: BackgroundTasks = BackgroundTasks(),
+    document_id: str,
+    background_tasks: BackgroundTasks
 ):
-    """Vectorize a processed document"""
-    doc_path = get_document_path(document_id)
-    if not doc_path.exists():
+
+    doc_info = get_document_info(document_id)
+
+    if not doc_info:
         raise HTTPException(
             status_code=404,
             detail=f"Document {document_id} not found"
         )
-    
-    # Check if markdown exists
-    md_files = list(doc_path.glob("*.md"))
-    if not md_files:
-        raise HTTPException(
-            status_code=400,
-            detail="Document must be processed first (markdown not found)"
-        )
-    
-    # Process in background
-    background_tasks.add_task(vectorize_background, document_id)
-    
-    return VectorizeResponse(
-        document_id=document_id,
-        status="processing",
-        message="Vectorization started",
+
+    # Generate quick summary immediately
+    summary = document_service.generate_quick_summary(document_id)
+
+    # Start vectorization in background
+    background_tasks.add_task(
+        document_service.trigger_vectorize,
+        document_id
     )
+
+    return {
+        "document_id": document_id,
+        "status": "vectorization_started",
+        "summary": summary
+    }
 
 
 def vectorize_background(document_id: str):
@@ -595,6 +672,161 @@ async def query_document(request: QueryRequest):
         debug_info=result.get("debug_info") or {},
         next_questions=result.get("next_questions") or [],
     )
+
+
+@app.post("/query/stream", tags=["Retrieval"])
+async def query_document_stream(request: QueryRequest):
+    """
+    True streaming endpoint: reuse the retrieval pipeline to decide which chunks
+    are relevant, then stream the LLM answer token-by-token (or chunk-by-chunk)
+    from the underlying model, similar to ChatGPT.
+    """
+    try:
+        # First run the normal query pipeline to get retrieval stats, chunks, and follow-ups.
+        # This uses the LangGraph-based agent and a non-streaming LLM call internally.
+        # We intentionally keep this so that /query and /query/stream stay consistent.
+        result = document_service.query_document(
+            request.document_id,
+            request.query,
+            include_chunks=request.include_chunks,
+        )
+    except ValueError as e:
+        status_code = 400 if "query" in str(e).lower() else 404
+        raise HTTPException(status_code=status_code, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error during streaming query (retrieval phase): {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+    # Load the underlying LLM so we can stream directly from it.
+    try:
+        agent_resources = document_service.load_agent_for_document(request.document_id)
+        llm = agent_resources.get("llm")
+        if llm is None:
+            raise RuntimeError("LLM not available for document")
+    except Exception as e:
+        logger.error(f"Error loading agent resources for streaming: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Streaming not available for this document")
+
+    # Build a prompt very similar to the one used in RetrievalAgentE.generate_final_answer,
+    # but using the chunks already returned by the service.
+    question = result.get("query") or request.query
+    chunks_for_answer = result.get("chunks") or []
+
+    chunk_blocks: List[str] = []
+    for c in chunks_for_answer:
+        cid = c.get("chunk_index")
+        heading = c.get("heading") or "No heading"
+        section = c.get("section_path") or "No section"
+        summary = c.get("summary") or ""
+        raw_content = c.get("content")
+        if isinstance(raw_content, list):
+            content_str = "\n".join(str(x) for x in raw_content)
+        else:
+            content_str = str(raw_content or "")
+        if len(content_str) > 500:
+            content_str = content_str[:500] + "..."
+        chunk_blocks.append(
+            f"\n[ChunkId: {cid}]\n"
+            f"Section: {section}\n"
+            f"Heading: {heading}\n"
+            f"Summary: {summary}\n"
+            f"Content: {content_str}\n"
+        )
+
+    context = "".join(chunk_blocks)
+    answer_prompt = f"""QUESTION (answer this using only the document chunks below):
+{question}
+
+---
+Document chunks (use only this information):
+{context}
+---
+
+Again, the question to answer is: {question}
+
+Write the answer in CLEAR, WELL-FORMATTED MARKDOWN:
+
+- Start with a one-line **Short Answer**.
+- Then add a **Detailed Explanation** section with 1–3 short paragraphs.
+- Use **bold subheadings** for important parts (for example: **Definition**, **Conditions**, **Exceptions**, **Important Dates**).
+- When listing items, steps, obligations, or conditions, use bullet points.
+- If the document does not state something explicitly, say that clearly (do not invent details).
+- VERY IMPORTANT: When you use information from one or more chunks, add citation markers at the end of the relevant sentence
+  using the following format, where ChunkId is the numeric id from the context above:
+  - Example with one source: This is some fact. [C12]
+  - Example with multiple sources: This is an important point. [C12][C27]
+  Only use ChunkIds that appear in the context (the [ChunkId: N] labels); do NOT make up ids.
+
+Answer (use only the chunks above; include citation markers as described):"""
+
+    async def event_generator():
+        # First, send metadata (chunks, stats, follow-up questions) so the UI can
+        # render sources and suggested questions immediately.
+        meta = {
+            "type": "meta",
+            "document_id": result["document_id"],
+            "query": result["query"],
+            "retrieval_stats": result["retrieval_stats"],
+            "chunks": result.get("chunks") or [],
+            "chunk_analysis": result.get("chunk_analysis"),
+            "debug_info": result.get("debug_info") or {},
+            "next_questions": result.get("next_questions") or [],
+        }
+        yield json.dumps(meta, ensure_ascii=False) + "\n"
+
+        # Then stream the answer directly from the underlying LLM whenever supported.
+        streamed_any = False
+        try:
+            if hasattr(llm, "astream"):
+                async for chunk in llm.astream(answer_prompt):
+                    delta = _extract_stream_delta(chunk)
+                    if not delta:
+                        continue
+                    streamed_any = True
+                    yield json.dumps(
+                        {"type": "answer_chunk", "delta": delta},
+                        ensure_ascii=False,
+                    ) + "\n"
+            elif hasattr(llm, "stream"):
+                # Synchronous streaming; run in the same thread.
+                for chunk in llm.stream(answer_prompt):
+                    delta = _extract_stream_delta(chunk)
+                    if not delta:
+                        continue
+                    streamed_any = True
+                    yield json.dumps(
+                        {"type": "answer_chunk", "delta": delta},
+                        ensure_ascii=False,
+                    ) + "\n"
+            else:
+                # Fallback to one-shot and chunk the result, so the endpoint still works.
+                response = llm.invoke(answer_prompt)
+                full_text = (getattr(response, "content", None) or str(response)).strip()
+                for piece in _chunk_markdown(full_text):
+                    streamed_any = True
+                    yield json.dumps(
+                        {"type": "answer_chunk", "delta": piece},
+                        ensure_ascii=False,
+                    ) + "\n"
+        except Exception as e:
+            logger.error(f"Error during LLM streaming: {e}", exc_info=True)
+            # Send an error chunk so the frontend can surface it nicely
+            yield json.dumps(
+                {"type": "error", "message": "Streaming failed while generating the answer."},
+                ensure_ascii=False,
+            ) + "\n"
+
+        if not streamed_any:
+            # Ensure the client always receives something for the answer.
+            yield json.dumps(
+                {"type": "answer_chunk", "delta": "I could not generate an answer for this query."},
+                ensure_ascii=False,
+            ) + "\n"
+
+        # Signal completion
+        yield json.dumps({"type": "done"}, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(event_generator(), media_type="application/json")
 
 
 @app.post("/visualize/{document_id}", tags=["Visualization"])

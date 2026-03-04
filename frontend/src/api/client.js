@@ -80,3 +80,73 @@ export async function queryDocument(documentId, query, includeChunks = true) {
     body: JSON.stringify({ document_id: documentId, query, include_chunks: includeChunks }),
   })
 }
+
+export async function queryDocumentStream(documentId, query, includeChunks = true, onChunk) {
+  const url = `${base()}/query/stream`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ document_id: documentId, query, include_chunks: includeChunks }),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    let detail = text
+    try {
+      const j = JSON.parse(text)
+      detail = j.detail || (typeof j.detail === 'string' ? j.detail : text)
+    } catch (_) {}
+    throw new Error(detail || `HTTP ${res.status}`)
+  }
+
+  if (!res.body) {
+    // Fallback: no streaming support, just parse JSON once
+    const full = await res.json()
+    if (typeof onChunk === 'function') {
+      onChunk({ type: 'meta', ...full })
+      onChunk({ type: 'answer_chunk', delta: full.answer || '' })
+      onChunk({ type: 'done' })
+    }
+    return
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    let newlineIndex
+    // Process complete JSON lines
+    while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, newlineIndex).trim()
+      buffer = buffer.slice(newlineIndex + 1)
+      if (!line) continue
+      try {
+        const data = JSON.parse(line)
+        if (typeof onChunk === 'function') {
+          onChunk(data)
+        }
+      } catch (e) {
+        // Skip malformed lines but do not break the whole stream
+        // eslint-disable-next-line no-console
+        console.warn('Failed to parse streaming chunk', e)
+      }
+    }
+  }
+
+  // Flush any remaining buffered line
+  const remaining = buffer.trim()
+  if (remaining) {
+    try {
+      const data = JSON.parse(remaining)
+      if (typeof onChunk === 'function') {
+        onChunk(data)
+      }
+    } catch (_) {
+      // ignore
+    }
+  }
+}

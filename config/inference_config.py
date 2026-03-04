@@ -99,9 +99,9 @@ class _HFInferenceClientEmbeddings:
 
 # ---------------- CONFIGURATION ----------------
 INFERENCE_PROVIDER = os.environ.get("INFERENCE_PROVIDER", "ollama").strip().lower()
-if INFERENCE_PROVIDER not in ("ollama", "huggingface"):
+if INFERENCE_PROVIDER not in ("ollama", "huggingface", "openai"):
     INFERENCE_PROVIDER = "ollama"
-    logger.warning("INFERENCE_PROVIDER must be 'ollama' or 'huggingface'; using 'ollama'")
+    logger.warning("INFERENCE_PROVIDER must be 'ollama', 'huggingface', or 'openai'; using 'ollama'")
 
 # Ollama
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -113,6 +113,12 @@ HF_EMBEDDING_MODEL = os.environ.get("HF_EMBEDDING_MODEL", "sentence-transformers
 HF_LLM_MODEL = os.environ.get("HF_LLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
 HUGGINGFACEHUB_API_TOKEN = os.environ.get("HUGGINGFACEHUB_API_TOKEN", os.environ.get("HF_TOKEN", ""))
 
+# OpenAI
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+OPENAI_EMBEDDING_MODEL = os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large")
+OPENAI_LLM_MODEL = os.environ.get("OPENAI_LLM_MODEL", "gpt-4o-mini")
+
 
 def get_embeddings():
     """Return a LangChain-compatible embedding instance (Ollama or Hugging Face)."""
@@ -122,7 +128,7 @@ def get_embeddings():
             model=OLLAMA_EMBEDDING_MODEL,
             base_url=OLLAMA_BASE_URL,
         )
-    else:
+    elif INFERENCE_PROVIDER == "huggingface":
         if not HUGGINGFACEHUB_API_TOKEN:
             raise ValueError(
                 "HUGGINGFACEHUB_API_TOKEN (or HF_TOKEN) is required when INFERENCE_PROVIDER=huggingface. "
@@ -148,6 +154,23 @@ def get_embeddings():
                     model_name=HF_EMBEDDING_MODEL,
                     api_key=HUGGINGFACEHUB_API_TOKEN,
                 ))
+    else:  # openai
+        if not OPENAI_API_KEY:
+            raise ValueError(
+                "OPENAI_API_KEY is required when INFERENCE_PROVIDER=openai. "
+                "Set it in the environment or .env file."
+            )
+        try:
+            from langchain_openai import OpenAIEmbeddings
+        except ImportError as e:
+            raise ImportError(
+                "langchain-openai is required for OpenAI embeddings. Install with: pip install langchain-openai"
+            ) from e
+        return OpenAIEmbeddings(
+            model=OPENAI_EMBEDDING_MODEL,
+            api_key=OPENAI_API_KEY,
+            base_url=OPENAI_BASE_URL,
+        )
 
 
 def get_llm(temperature: float = 0.3, **kwargs) -> Any:
@@ -160,7 +183,7 @@ def get_llm(temperature: float = 0.3, **kwargs) -> Any:
             temperature=temperature,
             **kwargs,
         )
-    else:
+    elif INFERENCE_PROVIDER == "huggingface":
         if not HUGGINGFACEHUB_API_TOKEN:
             raise ValueError(
                 "HUGGINGFACEHUB_API_TOKEN (or HF_TOKEN) is required when INFERENCE_PROVIDER=huggingface. "
@@ -195,6 +218,25 @@ def get_llm(temperature: float = 0.3, **kwargs) -> Any:
                     temperature=temperature,
                     model_kwargs=dict(kwargs) if kwargs else {},
                 )
+    else:  # openai
+        if not OPENAI_API_KEY:
+            raise ValueError(
+                "OPENAI_API_KEY is required when INFERENCE_PROVIDER=openai. "
+                "Set it in the environment or .env file."
+            )
+        try:
+            from langchain_openai import ChatOpenAI
+        except ImportError as e:
+            raise ImportError(
+                "langchain-openai is required for OpenAI LLMs. Install with: pip install langchain-openai"
+            ) from e
+        return ChatOpenAI(
+            model=OPENAI_LLM_MODEL,
+            api_key=OPENAI_API_KEY,
+            base_url=OPENAI_BASE_URL,
+            temperature=temperature,
+            **kwargs,
+        )
 
 
 def check_inference_ready() -> Tuple[bool, List[str]]:
@@ -221,7 +263,7 @@ def check_inference_ready() -> Tuple[bool, List[str]]:
         except Exception as e:
             logger.debug("Ollama check error: %s", e)
             return False, []
-    else:
+    elif INFERENCE_PROVIDER == "huggingface":
         if not HUGGINGFACEHUB_API_TOKEN:
             return False, []
         try:
@@ -236,6 +278,11 @@ def check_inference_ready() -> Tuple[bool, List[str]]:
         except Exception as e:
             logger.debug("Hugging Face check error: %s", e)
             return False, []
+    else:  # openai
+        if not OPENAI_API_KEY:
+            return False, []
+        # Avoid making a test request to save latency and quota; assume ready if key is present.
+        return True, [OPENAI_LLM_MODEL, OPENAI_EMBEDDING_MODEL]
 
 
 def get_provider_name() -> str:
@@ -247,11 +294,15 @@ def get_embedding_model_id() -> str:
     """Return the active embedding model id (for economics/logging)."""
     if INFERENCE_PROVIDER == "ollama":
         return OLLAMA_EMBEDDING_MODEL
-    return HF_EMBEDDING_MODEL
+    if INFERENCE_PROVIDER == "huggingface":
+        return HF_EMBEDDING_MODEL
+    return OPENAI_EMBEDDING_MODEL
 
 
 def get_llm_model_id() -> str:
     """Return the active LLM model id (for economics/logging)."""
     if INFERENCE_PROVIDER == "ollama":
         return OLLAMA_LLM_MODEL
-    return HF_LLM_MODEL
+    if INFERENCE_PROVIDER == "huggingface":
+        return HF_LLM_MODEL
+    return OPENAI_LLM_MODEL

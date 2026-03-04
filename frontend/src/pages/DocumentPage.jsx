@@ -28,18 +28,26 @@ export default function DocumentPage() {
   const vectorizeTriggered = useRef(false)
   const [activeHighlight, setActiveHighlight] = useState(null)
   const [isMarkdownOpen, setIsMarkdownOpen] = useState(false)
+  const [quickSummary, setQuickSummary] = useState(null)
 
   useEffect(() => {
     vectorizeTriggered.current = false
     setActiveHighlight(null)
     setIsMarkdownOpen(false)
+    setQuickSummary(null)
   }, [documentId])
 
   useEffect(() => {
     if (!doc || vectorizeTriggered.current) return
     if (doc.status === 'processing' && doc.markdown_path) {
       vectorizeTriggered.current = true
-      vectorizeMutation.mutate()
+      vectorizeMutation.mutate(undefined, {
+        onSuccess: (data) => {
+          if (data?.summary) {
+            setQuickSummary(data.summary)
+          }
+        },
+      })
     }
   }, [doc?.status, doc?.markdown_path])
 
@@ -158,6 +166,14 @@ export default function DocumentPage() {
             ready && isMarkdownOpen ? 'w-1/2' : 'w-full'
           }`}
         >
+          {quickSummary && !ready && (
+            <div className="px-4 pt-4 pb-2 border-b border-slate-800/80 bg-slate-950/70">
+              <h2 className="text-sm font-semibold text-slate-100 mb-1">Quick document overview</h2>
+              <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-line">
+                {quickSummary}
+              </p>
+            </div>
+          )}
           <ChatPanel
             documentId={documentId}
             documentReady={ready}

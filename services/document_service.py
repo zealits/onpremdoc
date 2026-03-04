@@ -181,6 +181,51 @@ def get_document_info(document_id: str) -> Optional[Dict[str, Any]]:
         "suggested_queries": suggested_queries,
     }
 
+def generate_quick_summary(document_id: str) -> str:
+    """
+    Generate a very fast document summary using only the
+    beginning and end of the markdown file.
+    """
+
+    doc_path = get_document_path(document_id)
+
+    md_files = list(doc_path.glob("*.md"))
+    if not md_files:
+        return "Document content not available."
+
+    md_path = md_files[0]
+
+    with open(md_path, "r", encoding="utf-8") as f:
+        text = f.read()
+
+    if len(text) < 4000:
+        snippet = text
+    else:
+        start = text[:2000]
+        end = text[-2000:]
+        snippet = start + "\n...\n" + end
+
+    llm = get_llm(temperature=0)
+
+    prompt = f"""
+You are generating a high-level overview of a document.
+
+The text below contains only fragments from different parts of the document 
+(beginning and ending sections). Use it only to infer the general topic 
+and purpose of the document.
+
+Write a short neutral summary (6–7 sentences) describing what the entire 
+document is about, not just the provided text.
+
+Your task is to just give a very highlevel summary of the document and not the specific details.
+
+Text fragments:
+{snippet}
+"""
+
+    response = llm.invoke(prompt)
+
+    return response.content.strip()
 
 def load_agent_for_document(document_id: str) -> Dict[str, Any]:
     """Load agent resources for a document. Raises ValueError if not vectorized or files missing."""
@@ -220,6 +265,11 @@ def load_agent_for_document(document_id: str) -> Dict[str, Any]:
         "llm": llm,
     }
     return _loaded_agents[document_id]
+
+
+def clear_loaded_agents() -> None:
+  """Clear in-memory agent cache (used on application shutdown)."""
+  _loaded_agents.clear()
 
 
 def run_detection_for_document(document_id: str) -> None:
