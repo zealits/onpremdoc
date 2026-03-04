@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { useParams } from 'react-router-dom'
-import { useDocument, useVectorize } from '../api/hooks'
+import { useParams, useNavigate } from 'react-router-dom'
+import { useDocument, useVectorize, useDeleteDocument } from '../api/hooks'
 import MarkdownViewer from '../components/MarkdownViewer'
 import ChatPanel from '../components/ChatPanel'
 
@@ -23,8 +23,10 @@ function getDocumentDisplayName(doc, documentId) {
 
 export default function DocumentPage() {
   const { documentId } = useParams()
+  const navigate = useNavigate()
   const { data: doc, isLoading, error } = useDocument(documentId)
   const vectorizeMutation = useVectorize(documentId)
+  const deleteMutation = useDeleteDocument(documentId)
   const vectorizeTriggered = useRef(false)
   const [activeHighlight, setActiveHighlight] = useState(null)
   const [isMarkdownOpen, setIsMarkdownOpen] = useState(false)
@@ -72,6 +74,17 @@ export default function DocumentPage() {
 
   if (!documentId) return null
 
+  const handleDelete = () => {
+    if (!documentId) return
+    const confirmed = window.confirm('Delete this chat and all associated data for this document? This cannot be undone.')
+    if (!confirmed) return
+    deleteMutation.mutate(undefined, {
+      onSuccess: () => {
+        navigate('/', { replace: true })
+      },
+    })
+  }
+
   return (
     <div className="flex-1 flex flex-col h-full min-h-0">
       <header className="doc-header shrink-0 border-b border-slate-800 bg-slate-900/70 backdrop-blur flex items-center justify-between gap-3 px-5 py-3">
@@ -83,17 +96,27 @@ export default function DocumentPage() {
             {`ID: \`${documentId}\``}
           </div>
         </div>
-        {doc?.status && (
-          <span
-            className={`text-[11px] px-2.5 py-1 rounded-full border whitespace-nowrap ${
-              ready
-                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
-                : 'bg-amber-500/10 text-amber-300 border-amber-400/40'
-            }`}
+        <div className="flex items-center gap-2">
+          {doc?.status && (
+            <span
+              className={`text-[11px] px-2.5 py-1 rounded-full border whitespace-nowrap ${
+                ready
+                  ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
+                  : 'bg-amber-500/10 text-amber-300 border-amber-400/40'
+              }`}
+            >
+              {doc.status}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={handleDelete}
+            disabled={deleteMutation.isPending}
+            className="inline-flex items-center justify-center rounded-full border border-red-500/60 px-3 py-1 text-[11px] font-medium text-red-200 hover:bg-red-500/10 disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            {doc.status}
-          </span>
-        )}
+            Delete
+          </button>
+        </div>
       </header>
       <div className="flex-1 flex min-h-0 overflow-hidden">
         <div

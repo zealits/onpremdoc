@@ -255,6 +255,16 @@ class AgentState(TypedDict):
     token_usage: Optional[List[Dict[str, Any]]]  # Per-step token counts for economics reporting
     # Suggested follow-up questions based on the original query and final answer
     next_questions: Optional[List[str]]
+    # When True, generate_final_answer only builds the prompt and sets answer_prompt (no LLM call).
+    streaming_mode: Optional[bool]
+    # Filled by generate_final_answer when streaming_mode is True; API then streams via llm.stream().
+    answer_prompt: Optional[str]
+    # Chunk indices used for page summarization (so API can return them in response).
+    page_summary_chunk_indices: Optional[List[int]]
+    # Past N messages for conversation context: list of {role, content, chunks?}.
+    past_messages: Optional[List[Dict[str, Any]]]
+    # When True, answer from session context only (no retrieval).
+    is_use_history: Optional[bool]
 
 # ---------------- TOKEN USAGE HELPERS (economics) ----------------
 def _est_tokens(text: str) -> int:
@@ -262,6 +272,37 @@ def _est_tokens(text: str) -> int:
     if not text:
         return 0
     return max(1, len(str(text).strip()) // 4)
+
+def _extract_stream_delta(chunk: Any) -> str:
+    """Extract text delta from a streaming LLM chunk (LangChain / OpenAI style)."""
+    data = None
+    if hasattr(chunk, "model_dump"):
+        try:
+            data = chunk.model_dump()
+        except Exception:
+            data = None
+    if isinstance(data, dict) and "content" in data:
+        content = data.get("content")
+    else:
+        content = getattr(chunk, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
+                parts.append(part["text"])
+        return "".join(parts)
+    if isinstance(chunk, dict):
+        choices = chunk.get("choices") or []
+        if choices:
+            delta = choices[0].get("delta") or {}
+            if isinstance(delta, dict) and isinstance(delta.get("content"), str):
+                return delta["content"]
+    return ""
+
 
 def _append_token_usage(
     state: AgentState,
@@ -348,47 +389,63 @@ def set_agent_resources(vector_store: Chroma, document_graph: DocumentGraph, chu
             logger.warning(f"Could not load page summarization agent: {e}")
             _page_agent = None
 
-# ---------------- QUERY CLASSIFICATION ---------------- 
+# ---------------- QUERY CLASSIFICATION ----------------
+def _format_past_for_classifier(past: List[Dict[str, Any]], max_turns: int = 5, max_content_len: int = 600) -> str:
+    """Format past messages for the classifier so it can see if the current query is already answered."""
+    if not past:
+        return "No previous conversation."
+    lines = []
+    for entry in past[-max_turns:]:
+        role = entry.get("role", "")
+        content = (entry.get("content") or "")[:max_content_len]
+        if len(entry.get("content") or "") > max_content_len:
+            content += "..."
+        lines.append(f"{role}: {content}")
+    return "\n\n".join(lines)
+
+
 def classify_query(state: AgentState) -> AgentState:
-    """Classify query to determine if it's asking for page summary or normal retrieval"""
-    query = state["query"].lower()
+    """
+    Classify the query using the LLM with a single general prompt. No heuristics.
+    Three outcomes: FULL_RETRIEVAL, USE_HISTORY, PAGE_SUMMARY.
+    """
+    query = (state.get("query") or "").strip()
     llm = _llm
-    
+    past = state.get("past_messages") or []
+
     logger.info("Classifying query type...")
-    
-    # Quick pattern matching for common page summary queries
-    page_patterns = [
-        r'page\s+(\d+)',
-        r'page\s+number\s+(\d+)',
-        r'summarize\s+page\s+(\d+)',
-        r'summary\s+of\s+page\s+(\d+)',
-        r'what\s+is\s+on\s+page\s+(\d+)',
-        r'content\s+of\s+page\s+(\d+)',
-        r'explain\s+page\s+(\d+)',
-    ]
-    
-    page_number = None
-    for pattern in page_patterns:
-        match = re.search(pattern, query)
-        if match:
-            try:
-                page_number = int(match.group(1))
-                logger.info(f"Detected page number from pattern: {page_number}")
-                state["is_page_summary"] = True
-                state["page_number"] = page_number
-                return state
-            except ValueError:
-                continue
-    
-    # Use LLM for more complex classification
-    classification_prompt = f"""Is this query asking for a page summary (specific page number) or a general document question?
 
-Query: {state["query"]}
+    past_context = _format_past_for_classifier(past)
 
-Reply EXACTLY:
-IS_PAGE_SUMMARY: [YES or NO]
-PAGE_NUMBER: [number if YES, else None]"""
-    
+    classification_prompt = f"""You are a classifier for a document Q&A system. You must choose exactly one of three options based on the current query and the previous conversation.
+
+Previous conversation:
+{past_context}
+
+Current query: {query}
+
+Options:
+
+FULL_RETRIEVAL — Choose when the current query cannot be fully answered from the previous conversation. The system will then search the document to answer it.
+
+USE_HISTORY — Choose when the current query can be answered from the previous conversation.
+
+PAGE_SUMMARY — Choose when the user is asking for a summary or explanation of a specific page of the document. You must then provide the page number.
+
+Reply with exactly two lines in this format:
+CLASS: FULL_RETRIEVAL
+PAGE_NUMBER: None
+
+or
+
+CLASS: USE_HISTORY
+PAGE_NUMBER: None
+
+or
+
+CLASS: PAGE_SUMMARY
+PAGE_NUMBER: <integer>"""
+
     try:
         response = llm.invoke(classification_prompt)
         response_text = (getattr(response, "content", None) or str(response)).strip()
@@ -397,42 +454,56 @@ PAGE_NUMBER: [number if YES, else None]"""
             input_tokens=_est_tokens(classification_prompt),
             output_tokens=_est_tokens(response_text),
         )
-        
-        is_page_summary = False
+
+        state["is_page_summary"] = False
+        state["page_number"] = None
+        state["is_use_history"] = False
+
+        response_upper = response_text.upper()
+
+        # Parse CLASS from response
+        class_val = "FULL_RETRIEVAL"
+        if "CLASS:" in response_upper:
+            for line in response_text.split("\n"):
+                if "CLASS:" in line.upper():
+                    if "PAGE_SUMMARY" in line.upper():
+                        class_val = "PAGE_SUMMARY"
+                    elif "USE_HISTORY" in line.upper():
+                        class_val = "USE_HISTORY"
+                    else:
+                        class_val = "FULL_RETRIEVAL"
+                    break
+
+        # Parse PAGE_NUMBER when CLASS is PAGE_SUMMARY
         page_num = None
-        
-        if "IS_PAGE_SUMMARY:" in response_text.upper():
-            summary_line = [line for line in response_text.split("\n") if "IS_PAGE_SUMMARY:" in line.upper()]
-            if summary_line:
-                summary_value = summary_line[0].split(":")[-1].strip().upper()
-                is_page_summary = summary_value == "YES"
-        
-        if is_page_summary and "PAGE_NUMBER:" in response_text.upper():
-            page_line = [line for line in response_text.split("\n") if "PAGE_NUMBER:" in line.upper()]
-            if page_line:
-                page_value = page_line[0].split(":")[-1].strip()
-                try:
-                    page_num = int(page_value)
-                except ValueError:
-                    # Try to extract number from the value
-                    num_match = re.search(r'\d+', page_value)
+        if class_val == "PAGE_SUMMARY" and "PAGE_NUMBER:" in response_upper:
+            for line in response_text.split("\n"):
+                if "PAGE_NUMBER:" in line.upper():
+                    rest = line.split(":", 1)[-1].strip() if ":" in line else line
+                    num_match = re.search(r"\d+", rest)
                     if num_match:
                         page_num = int(num_match.group())
-        
-        state["is_page_summary"] = is_page_summary
-        state["page_number"] = page_num if is_page_summary else None
-        
-        if is_page_summary and page_num:
-            logger.info(f"Query classified as page summary request for page {page_num}")
+                    break
+
+        if class_val == "PAGE_SUMMARY" and page_num is not None:
+            state["is_page_summary"] = True
+            state["page_number"] = page_num
+            logger.info(f"Query classified as page summary for page {page_num}")
+        elif class_val == "USE_HISTORY":
+            state["is_use_history"] = True
+            logger.info("Query classified as use_history (answer from session context)")
         else:
-            logger.info("Query classified as normal retrieval request")
-        
+            state["is_use_history"] = False
+            logger.info("Query classified as full retrieval")
+
     except Exception as e:
         logger.error(f"Error classifying query: {e}")
         state["is_page_summary"] = False
         state["page_number"] = None
-    
+        state["is_use_history"] = False
+
     return state
+
 
 # ---------------- PAGE SUMMARIZATION ---------------- 
 def summarize_page(state: AgentState) -> AgentState:
@@ -449,40 +520,125 @@ def summarize_page(state: AgentState) -> AgentState:
         return state
     
     logger.info(f"Generating summary for page {page_number}...")
-    
+
+    # When streaming, only build the prompt; API will stream via llm.stream().
+    if state.get("streaming_mode"):
+        result = page_agent.get_summary_prompt(page_number, use_adjacent_if_empty=True)
+        if result:
+            prompt, chunk_indices = result
+            # Page summarization: prepend past conversation context (content only, no chunks)
+            past = state.get("past_messages") or []
+            if past:
+                conv_block = _format_past_messages_for_prompt(past, include_chunks=False) + "\n\n"
+                prompt = conv_block + prompt
+            state["answer_prompt"] = prompt
+            state["page_summary_chunk_indices"] = chunk_indices
+            state["final_answer"] = ""
+        else:
+            state["page_summary_chunk_indices"] = []
+            state["final_answer"] = "No content available for this page. The page may be blank, contain only images, or have insufficient text for processing."
+        return state
+
     try:
         page_summary = page_agent.summarize_page(page_number, use_adjacent_if_empty=True)
-        
+
         # Format the response
         answer_parts = []
-        
+
         if page_summary.page_classification:
             answer_parts.append(f"**Page {page_number} Classification:** {page_summary.page_classification}\n")
-        
+
         answer_parts.append(f"**Summary:**\n{page_summary.summary}\n")
-        
+
         if page_summary.key_points:
             answer_parts.append("**Key Points:**")
             for point in page_summary.key_points:
                 answer_parts.append(f"- {point}")
             answer_parts.append("")
-        
-        if page_summary.sections:
-            answer_parts.append(f"**Sections:** {', '.join(page_summary.sections)}")
-        
+
         if page_summary.used_adjacent_pages and page_summary.adjacent_pages_used:
             answer_parts.append(f"\n*Note: This summary is based on adjacent pages {page_summary.adjacent_pages_used} as page {page_number} had limited direct content.*")
-        
+
         state["final_answer"] = "\n".join(answer_parts)
+        state["page_summary_chunk_indices"] = page_summary.chunks_used if page_summary.chunks_used else []
         logger.info(f"Page summary generated successfully for page {page_number}")
-        
+
     except Exception as e:
         logger.error(f"Error generating page summary: {e}", exc_info=True)
         state["final_answer"] = f"Error generating summary for page {page_number}: {str(e)}"
-    
+        state["page_summary_chunk_indices"] = []
+
     return state
 
-# ---------------- RETRIEVAL FUNCTIONS ---------------- 
+
+def _format_past_messages_for_prompt(
+    past_messages: List[Dict[str, Any]], include_chunks: bool = True
+) -> str:
+    """Format past_messages as a string for the LLM. If include_chunks=False (page summarization), only content."""
+    if not past_messages:
+        return ""
+    lines = ["Previous conversation:"]
+    for entry in past_messages:
+        role = entry.get("role", "")
+        content = (entry.get("content") or "").strip()
+        if role == "user":
+            lines.append(f"User: {content}")
+        else:
+            lines.append(f"Assistant: {content}")
+            if include_chunks:
+                chunks = entry.get("chunks") or []
+                for c in chunks[:2]:
+                    cid = c.get("chunk_index")
+                    text = c.get("content")
+                    if isinstance(text, list):
+                        text = "\n".join(str(t) for t in text)
+                    text = (text or "")[:400] + ("..." if len(str(text or "")) > 400 else "")
+                    if cid is not None and text:
+                        lines.append(f"  [Chunk {cid}]: {text}")
+    return "\n".join(lines)
+
+
+def answer_from_history(state: AgentState) -> AgentState:
+    """Answer from session context only (no retrieval). Uses past_messages + current query."""
+    query = (state.get("query") or "").strip()
+    past = state.get("past_messages") or []
+    llm = _llm
+
+    if not past:
+        state["final_answer"] = "I don't have any previous messages in this conversation to refer to. Please ask a question about the document."
+        return state
+
+    context_str = _format_past_messages_for_prompt(past, include_chunks=True)
+
+    answer_prompt = f"""You are answering a follow-up question based only on the conversation below. Do not use any external knowledge.
+
+{context_str}
+
+Current question: {query}
+
+Answer concisely based only on the previous conversation above. If the question cannot be answered from the context, say so."""
+
+    if state.get("streaming_mode"):
+        state["answer_prompt"] = answer_prompt
+        state["final_answer"] = ""
+        return state
+
+    try:
+        response = llm.invoke(answer_prompt)
+        response_str = (getattr(response, "content", None) or str(response)).strip()
+        state["final_answer"] = response_str
+        _append_token_usage(
+            state, "answer_from_history",
+            input_tokens=_est_tokens(answer_prompt),
+            output_tokens=_est_tokens(response_str),
+        )
+    except Exception as e:
+        logger.error(f"Error in answer_from_history: {e}", exc_info=True)
+        state["final_answer"] = "I couldn't generate an answer from the conversation context. Please try again."
+    return state
+
+
+# ---------------- RETRIEVAL FUNCTIONS ----------------
 def distance_to_similarity(distance: float, scale_factor: float = 150.0) -> float:
     """Convert L2 distance to similarity score [0, 1]"""
     similarity = 1.0 / (1.0 + (distance / scale_factor))
@@ -802,7 +958,7 @@ def generate_final_answer(state: AgentState) -> AgentState:
     # Use re-ranked chunks if available, otherwise use retrieved chunks
     primary_chunks = state.get("reranked_chunks") or state.get("retrieved_chunks", [])
     second_chunks = state.get("second_retrieval_chunks", [])
-    
+
     # Combine chunks: when second retrieval was used (refined query), put those chunks first
     # so the answer is based on the most relevant retrieval (e.g. "jurisdiction" refined query).
     primary_chunk_ids = {chunk.metadata.get("chunk_index") for chunk in primary_chunks}
@@ -825,23 +981,23 @@ def generate_final_answer(state: AgentState) -> AgentState:
     llm = _llm
 
     logger.info(f"Generating final answer from {len(all_chunks)} chunks (primary: {len(primary_chunks)}, second: {len(second_chunks)})...")
-    
+
     # Prepare comprehensive context
     chunks_text = []
     rerank_scores = state.get("rerank_scores", {})
-    
+
     for chunk in chunks_to_use:
         chunk_id = chunk.metadata.get("chunk_index")
         heading = chunk.metadata.get("heading", "No heading")
         section = chunk.metadata.get("section_path", "No section")
         summary = chunk.metadata.get("summary", "")
         content = chunk.page_content[:500] + "..." if len(chunk.page_content) > 500 else chunk.page_content
-        
+
         # Add relevance score if available
         relevance_note = ""
         if chunk_id in rerank_scores:
             relevance_note = f" (Relevance: {rerank_scores[chunk_id]:.2f})"
-        
+
         # IMPORTANT: we label each chunk with its real vector index (chunk_index)
         # so the LLM can cite sources using [C<ChunkId>] markers.
         chunks_text.append(f"""
@@ -851,9 +1007,10 @@ Heading: {heading}
 Summary: {summary}
 Content: {content}{relevance_note}
 """)
-    
+
     context = "\n".join(chunks_text)
-    
+
+    # Full retrieval path: do NOT send past conversation context. Answer from retrieved chunks + current query only.
     # Put the question first and repeat before answer so the model always sees it.
     # Instruct the model to return a well-structured, markdown-formatted answer with bold headings
     # and inline citations that reference the underlying chunk indexes.
@@ -881,10 +1038,25 @@ Write the answer in CLEAR, WELL-FORMATTED MARKDOWN:
   Only use ChunkIds that appear in the context (the [ChunkId: N] labels); do NOT make up ids.
 
 Answer (use only the chunks above; include citation markers as described):"""
-    
+
+    # When streaming_mode is set, only attach the prompt for the API to stream via llm.stream().
+    if state.get("streaming_mode"):
+        state["answer_prompt"] = answer_prompt
+        state["final_answer"] = ""
+        return state
+
     try:
-        response = llm.invoke(answer_prompt)
-        response_str = (getattr(response, "content", None) or str(response)).strip()
+        # Use llm.stream() and accumulate so we support both streaming and non-streaming callers.
+        response_parts: List[str] = []
+        if hasattr(llm, "stream"):
+            for chunk in llm.stream(answer_prompt):
+                delta = _extract_stream_delta(chunk)
+                if delta:
+                    response_parts.append(delta)
+            response_str = "".join(response_parts).strip()
+        else:
+            response = llm.invoke(answer_prompt)
+            response_str = (getattr(response, "content", None) or str(response)).strip()
         final_answer = response_str
         _append_token_usage(
             state, "generate_answer",
@@ -1001,17 +1173,21 @@ Reply in the following format ONLY:
     return state
 
 # ---------------- CONDITIONAL EDGE FUNCTIONS ---------------- 
-def route_query_type(state: AgentState) -> Literal["summarize_page", "normal_retrieval"]:
-    """Route query to page summarization or normal retrieval"""
+def route_query_type(state: AgentState) -> Literal["summarize_page", "use_history", "normal_retrieval"]:
+    """Route query to page summarization, use_history (session context only), or normal retrieval"""
     is_page_summary = state.get("is_page_summary", False)
     page_number = state.get("page_number")
-    
+    is_use_history = state.get("is_use_history", False)
+
     if is_page_summary and page_number:
         logger.info(f"Routing to page summarization for page {page_number}")
         return "summarize_page"
-    else:
-        logger.info("Routing to normal retrieval")
-        return "normal_retrieval"
+    if is_use_history:
+        logger.info("Routing to use_history (answer from session context)")
+        return "use_history"
+    logger.info("Routing to normal retrieval")
+    return "normal_retrieval"
+
 
 def should_continue_search(state: AgentState) -> Literal["second_retrieval", "generate_answer"]:
     """Decide whether to do second retrieval or generate answer"""
@@ -1034,44 +1210,49 @@ def create_retrieval_agent(vector_store: Chroma, document_graph: DocumentGraph, 
     """Create the LangGraph retrieval agent with page summarization support"""
     
     workflow = StateGraph(AgentState)
-    
+
     # Add nodes
     workflow.add_node("classify_query", classify_query)
     workflow.add_node("summarize_page", summarize_page)
+    workflow.add_node("answer_from_history", answer_from_history)
     workflow.add_node("initial_retrieval", initial_retrieval)
     workflow.add_node("analyze_chunks", analyze_chunks)
     workflow.add_node("second_retrieval", second_retrieval)
     workflow.add_node("generate_answer", generate_final_answer)
-    
+
     # Define edges
     workflow.set_entry_point("classify_query")
-    
-    # Route based on query type
+
+    # Route based on query type: summarize_page | use_history | normal_retrieval
     workflow.add_conditional_edges(
         "classify_query",
         route_query_type,
         {
             "summarize_page": "summarize_page",
-            "normal_retrieval": "initial_retrieval"
-        }
+            "use_history": "answer_from_history",
+            "normal_retrieval": "initial_retrieval",
+        },
     )
-    
+
     # Page summarization path
     workflow.add_edge("summarize_page", END)
-    
+
+    # Use history path (no retrieval)
+    workflow.add_edge("answer_from_history", END)
+
     # Normal retrieval path
     workflow.add_edge("initial_retrieval", "analyze_chunks")
-    
+
     # Conditional edge for second retrieval
     workflow.add_conditional_edges(
         "analyze_chunks",
         should_continue_search,
         {
             "second_retrieval": "second_retrieval",
-            "generate_answer": "generate_answer"
-        }
+            "generate_answer": "generate_answer",
+        },
     )
-    
+
     workflow.add_edge("second_retrieval", "generate_answer")
     workflow.add_edge("generate_answer", END)
     

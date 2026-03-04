@@ -9,6 +9,32 @@ const SUGGESTED = [
 
 const CITATION_REGEX = /\[C(\d+)\]/g
 const CHAT_STORAGE_KEY = 'onpremdoc-chat'
+const SESSION_STORAGE_KEY_PREFIX = 'onpremdoc-session-'
+
+function getStoredSessionId(documentId) {
+  if (!documentId) return null
+  try {
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY_PREFIX + documentId)
+    if (raw == null) return null
+    const n = parseInt(raw, 10)
+    return Number.isNaN(n) ? null : n
+  } catch {
+    return null
+  }
+}
+
+function setStoredSessionId(documentId, sessionId) {
+  if (!documentId) return
+  try {
+    if (sessionId == null) {
+      localStorage.removeItem(SESSION_STORAGE_KEY_PREFIX + documentId)
+    } else {
+      localStorage.setItem(SESSION_STORAGE_KEY_PREFIX + documentId, String(sessionId))
+    }
+  } catch {
+    // ignore
+  }
+}
 
 function getStoredMessages(documentId) {
   if (!documentId) return []
@@ -145,8 +171,11 @@ function ChatPanel({ documentId, documentReady, onHighlightChunk }) {
     abortControllerRef.current = controller
     setIsStreaming(true)
 
+    // Use stored session for this document so all messages in this chat belong to one session
+    const sessionIdToSend = getStoredSessionId(documentId)
+
     try {
-      await queryDocumentStream(documentId, q, true, (chunk) => {
+      await queryDocumentStream(documentId, q, sessionIdToSend, true, (chunk) => {
         setMessages((prev) => {
           const idx = activeAssistantIndexRef.current
           if (idx == null || idx < 0 || idx >= prev.length) return prev
@@ -154,8 +183,11 @@ function ChatPanel({ documentId, documentReady, onHighlightChunk }) {
           const msg = { ...copy[idx] }
 
           if (chunk.type === 'meta') {
+            if (chunk.session_id != null) setStoredSessionId(documentId, chunk.session_id)
             msg.chunks = chunk.chunks || []
             msg.next_questions = chunk.next_questions || []
+            msg.is_page_summary = chunk.is_page_summary === true
+            msg.page_number = chunk.page_number
           } else if (chunk.type === 'answer_chunk') {
             msg.content = (msg.content || '') + (chunk.delta || '')
           } else if (chunk.type === 'error') {
@@ -167,6 +199,9 @@ function ChatPanel({ documentId, documentReady, onHighlightChunk }) {
         })
       })
     } catch (err) {
+      if (err?.message?.toLowerCase().includes('session not found')) {
+        setStoredSessionId(documentId, null)
+      }
       setMessages((m) => [
         ...m,
         { role: 'assistant', content: `Error: ${err?.message || 'Request failed'}` },
@@ -249,6 +284,19 @@ function ChatPanel({ documentId, documentReady, onHighlightChunk }) {
             >
               {msg.role === 'assistant' ? (
                 <div className="space-y-2 prose-citations">
+                  {msg.is_page_summary && (msg.chunks?.length ?? 0) > 0 && (
+                    <div className="flex flex-wrap items-center gap-1.5 mb-2 pb-2 border-b border-slate-200">
+                      <span className="text-xs font-medium text-slate-500 mr-1">Chunks used:</span>
+                      {msg.chunks.map((c) => (
+                        <CitationButton
+                          key={c.chunk_index}
+                          chunkId={c.chunk_index}
+                          chunks={msg.chunks}
+                          onHighlight={onHighlightChunk}
+                        />
+                      ))}
+                    </div>
+                  )}
                   <ReactMarkdown
                     rehypePlugins={[rehypeCitationSpans]}
                     components={{

@@ -182,26 +182,21 @@ class PageSummarizationAgent:
             chunks_used=chunk_ids,
         )
     
-    def _generate_summary_with_llm(
+    def _build_summary_prompt(
         self,
         page_number: int,
         content: str,
         classification: Optional[str],
         used_adjacent: bool,
-        adjacent_pages: Optional[List[int]]
-    ) -> Tuple[str, List[str]]:
-        """Generate page summary and key points using LLM"""
-        
-        # Truncate content if too long (keep first 4000 chars for LLM)
+        adjacent_pages: Optional[List[int]],
+    ) -> str:
+        """Build the prompt string for page summary (no LLM call). Used for streaming."""
         content_for_llm = content[:4000] + "..." if len(content) > 4000 else content
-        
         context_note = ""
         if used_adjacent and adjacent_pages:
             context_note = f"\n\nNOTE: Page {page_number} had no direct content, so this summary is based on content from adjacent pages: {', '.join(map(str, adjacent_pages))}."
-        
         classification_note = f"\n\nPage Classification: {classification}" if classification else ""
-        
-        prompt = f"""You are analyzing page {page_number} of a document.
+        return f"""You are analyzing page {page_number} of a document.
 
 Page Content:
 {content_for_llm}
@@ -224,7 +219,54 @@ KEY_POINTS:
 [Continue with more key points as needed]
 
 Now provide the summary and key points:"""
-        
+
+    def get_summary_prompt(
+        self, page_number: int, use_adjacent_if_empty: bool = True
+    ) -> Optional[Tuple[str, List[int]]]:
+        """
+        Build the LLM prompt for page summary without calling the LLM.
+        Returns None if the page has no content (so API can fall back to a static message).
+        When content exists, returns (prompt, chunk_indices) for streaming and for returning chunks in the API.
+        """
+        page_chunks = self.get_chunks_by_page(page_number)
+        used_adjacent = False
+        adjacent_pages = None
+        if not page_chunks and use_adjacent_if_empty:
+            adjacent_chunks, adjacent_pages = self.get_adjacent_page_chunks(page_number, window=1)
+            if adjacent_chunks:
+                page_chunks = adjacent_chunks
+                used_adjacent = True
+            else:
+                adjacent_chunks, adjacent_pages = self.get_adjacent_page_chunks(page_number, window=2)
+                if adjacent_chunks:
+                    page_chunks = adjacent_chunks
+                    used_adjacent = True
+        if not page_chunks:
+            return None
+        chunk_ids = [
+            c.metadata.get("chunk_index")
+            for c in page_chunks
+            if c.metadata.get("chunk_index") is not None
+        ]
+        page_content = "\n\n".join([chunk.page_content for chunk in page_chunks])
+        classification = self.get_page_classification(page_number)
+        prompt = self._build_summary_prompt(
+            page_number, page_content, classification, used_adjacent, adjacent_pages
+        )
+        return (prompt, chunk_ids)
+
+    def _generate_summary_with_llm(
+        self,
+        page_number: int,
+        content: str,
+        classification: Optional[str],
+        used_adjacent: bool,
+        adjacent_pages: Optional[List[int]]
+    ) -> Tuple[str, List[str]]:
+        """Generate page summary and key points using LLM"""
+        prompt = self._build_summary_prompt(
+            page_number, content, classification, used_adjacent, adjacent_pages
+        )
         try:
             response = self.llm.invoke(prompt)
             response_text = (getattr(response, "content", None) or str(response)).strip()

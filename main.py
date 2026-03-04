@@ -6,6 +6,7 @@ Integrates PDF detection, vectorization, retrieval, and visualization
 import asyncio
 import json
 import logging
+import re
 import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -23,6 +24,7 @@ from fastapi import (
     Query,
     Path as PathParam,
     status,
+    Depends,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
@@ -48,6 +50,9 @@ logger = logging.getLogger(__name__)
 
 # Configuration - use service layer for paths and document ops
 from services import document_service
+from db import init_db, ChatSession, ChatMessage
+from auth import router as auth_router, get_current_user, get_db
+from chat_api import router as chat_router
 
 OUTPUT_DIR = document_service.OUTPUT_DIR
 UPLOAD_DIR = document_service.UPLOAD_DIR
@@ -174,6 +179,7 @@ class QueryRequest(BaseModel):
     query: str = Field(..., description="The query to search for")
     document_id: str = Field(..., description="Document ID to query")
     include_chunks: bool = Field(default=True, description="Include detailed chunk information in response")
+    session_id: Optional[int] = Field(default=None, description="Chat session ID for preserving conversation context")
 
 
 class QueryResponse(BaseModel):
@@ -230,6 +236,12 @@ class ErrorResponse(BaseModel):
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     logger.info("Starting application...")
+    # Ensure database schema exists
+    try:
+        init_db()
+        logger.info("Database initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}", exc_info=True)
     
     # Check inference backend on startup
     is_running, models = check_inference_ready()
@@ -266,6 +278,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Routers
+app.include_router(auth_router)
+app.include_router(chat_router)
 
 
 # ---------------- HELPER FUNCTIONS (delegate to service) ----------------
@@ -400,21 +416,25 @@ async def health_check():
 
 
 @app.get("/documents", response_model=List[DocumentInfo], tags=["Documents"])
-async def list_documents():
-    """List all processed documents"""
-    documents = []
-    if OUTPUT_DIR.exists():
-        for doc_dir in OUTPUT_DIR.iterdir():
-            if doc_dir.is_dir():
-                doc_info = get_document_info(doc_dir.name)
-                if doc_info:
-                    documents.append(doc_info)
-    return documents
+async def list_documents(current_user=Depends(get_current_user)):
+    """List all processed documents for the current user"""
+    docs = document_service.list_documents_for_user(current_user.id)
+    return [DocumentInfo(**d) for d in docs]
 
 
 @app.get("/documents/{document_id}", response_model=DocumentInfo, tags=["Documents"])
-async def get_document(document_id: str = PathParam(..., description="Document ID")):
+async def get_document(
+    document_id: str = PathParam(..., description="Document ID"),
+    current_user=Depends(get_current_user),
+):
     """Get document information"""
+    try:
+        document_service.ensure_document_belongs_to_user(document_id, current_user.id)
+    except ValueError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Document {document_id} not found",
+        )
     doc_info = get_document_info(document_id)
     if not doc_info:
         raise HTTPException(
@@ -425,9 +445,13 @@ async def get_document(document_id: str = PathParam(..., description="Document I
 
 
 @app.get("/documents/{document_id}/markdown", tags=["Documents"])
-async def get_markdown(document_id: str = PathParam(..., description="Document ID")):
+async def get_markdown(
+    document_id: str = PathParam(..., description="Document ID"),
+    current_user=Depends(get_current_user),
+):
     """Get markdown content for a document"""
     try:
+        document_service.ensure_document_belongs_to_user(document_id, current_user.id)
         content = document_service.get_document_markdown(document_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -436,8 +460,18 @@ async def get_markdown(document_id: str = PathParam(..., description="Document I
 
 
 @app.get("/documents/{document_id}/confidence", response_model=ConfidenceResponse, tags=["Documents"])
-async def get_confidence(document_id: str = PathParam(..., description="Document ID")):
+async def get_confidence(
+    document_id: str = PathParam(..., description="Document ID"),
+    current_user=Depends(get_current_user),
+):
     """Get Docling confidence / accuracy scores for a document"""
+    try:
+        document_service.ensure_document_belongs_to_user(document_id, current_user.id)
+    except ValueError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Document {document_id} not found",
+        )
     doc_info = get_document_info(document_id)
     if not doc_info:
         raise HTTPException(
@@ -496,8 +530,15 @@ async def get_confidence(document_id: str = PathParam(..., description="Document
 
 
 @app.get("/documents/{document_id}/pdf", tags=["Documents"])
-async def get_document_pdf(document_id: str = PathParam(..., description="Document ID")):
+async def get_document_pdf(
+    document_id: str = PathParam(..., description="Document ID"),
+    current_user=Depends(get_current_user),
+):
     """Serve the original PDF file for the document (for viewer)."""
+    try:
+        document_service.ensure_document_belongs_to_user(document_id, current_user.id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Document {document_id} not found")
     doc_path = get_document_path(document_id)
     if not doc_path.exists():
         raise HTTPException(status_code=404, detail=f"Document {document_id} not found")
@@ -516,6 +557,7 @@ async def get_document_pdf(document_id: str = PathParam(..., description="Docume
 async def upload_pdf(
     file: UploadFile = File(..., description="PDF file to upload"),
     background_tasks: BackgroundTasks = BackgroundTasks(),
+    current_user=Depends(get_current_user),
 ):
     """Upload and process a PDF file"""
     if not file.filename.endswith('.pdf'):
@@ -524,9 +566,9 @@ async def upload_pdf(
             detail="Only PDF files are supported"
         )
     
-    # Generate document ID
+    # Generate document ID and user-specific document path
     document_id = str(uuid4())
-    doc_path = get_document_path(document_id)
+    doc_path = document_service.get_document_path_for_user(current_user.id, document_id)
     doc_path.mkdir(parents=True, exist_ok=True)
     
     # Save uploaded file
@@ -535,6 +577,8 @@ async def upload_pdf(
         shutil.copyfileobj(file.file, buffer)
     file_size = pdf_path.stat().st_size
     log_upload(document_id, file_size_bytes=file_size, filename=file.filename or "")
+    # Register ownership
+    document_service.register_document_for_user(current_user.id, document_id)
     
     # Process in background
     background_tasks.add_task(process_pdf_background, str(pdf_path), document_id)
@@ -544,6 +588,22 @@ async def upload_pdf(
         status="processing",
         message="PDF uploaded and processing started",
     )
+
+
+@app.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Documents"])
+async def delete_document(
+    document_id: str,
+    current_user=Depends(get_current_user),
+):
+    """Delete a document and all associated chat data for the current user."""
+    try:
+        document_service.delete_document_for_user(current_user.id, document_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Document {document_id} not found",
+        )
+    return
 
 
 def process_pdf_background(pdf_path: str, document_id: str):
@@ -560,16 +620,17 @@ def process_pdf_background(pdf_path: str, document_id: str):
 @app.post("/vectorize/{document_id}")
 async def vectorize_document(
     document_id: str,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    current_user=Depends(get_current_user),
 ):
-
-    doc_info = get_document_info(document_id)
-
-    if not doc_info:
+    try:
+        document_service.ensure_document_belongs_to_user(document_id, current_user.id)
+    except ValueError:
         raise HTTPException(
             status_code=404,
             detail=f"Document {document_id} not found"
         )
+    doc_info = get_document_info(document_id)
 
     # Generate quick summary immediately
     summary = document_service.generate_quick_summary(document_id)
@@ -623,147 +684,153 @@ async def economics_summary(date: Optional[str] = Query(None, description="Date 
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/query", response_model=QueryResponse, tags=["Retrieval"])
-async def query_document(request: QueryRequest):
-    """Query a vectorized document using graph-enhanced retrieval"""
-    try:
-        result = document_service.query_document(
-            request.document_id,
-            request.query,
-            include_chunks=request.include_chunks,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400 if "query" in str(e).lower() else 404, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error during query: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+# Number of past messages to send as conversation context to the LLM
+PAST_N_MESSAGES = 6
+# Max chunks per assistant message to include (only those cited in the answer)
+MAX_CHUNKS_PER_PAST_MESSAGE = 2
 
-    # Build ChunkDetail list from service dicts.
-    # `content` is passed through as-is so that, when available, it matches
-    # the exact representation from the vector_mapping JSON (list of lines).
-    chunks_detail = [
-        ChunkDetail(
-            chunk_index=c["chunk_index"],
-            content=c["content"],
-            heading=c["heading"],
-            section_path=c["section_path"],
-            section_title=c["section_title"],
-            page_number=c.get("page_number"),
-            page_classification=c.get("page_classification"),
-            summary=c["summary"],
-            chunk_type=c["chunk_type"],
-            has_table=c["has_table"],
-            table_context=c.get("table_context"),
-            start_line=c.get("start_line"),
-            content_length=c["content_length"],
-            retrieval_source=c["retrieval_source"],
-            similarity_score=c.get("similarity_score"),
-            rerank_score=c.get("rerank_score"),
+def _chunk_refs_in_content(content: str) -> List[int]:
+    """Parse [C0], [C15], etc. from content; return unique chunk indices in order of first appearance."""
+    if not content:
+        return []
+    seen = set()
+    order = []
+    for m in re.finditer(r"\[C(\d+)\]", content, re.IGNORECASE):
+        idx = int(m.group(1))
+        if idx not in seen:
+            seen.add(idx)
+            order.append(idx)
+    return order
+
+def _build_past_messages(
+    db: Any, session_id: int, before_message_id: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    """
+    Load last N messages for the session (before the given message id) and build
+    past_messages for the agent. For each assistant message, include only the
+    chunks that appear in the answer ([C0], [C15], etc.), max MAX_CHUNKS_PER_PAST_MESSAGE.
+    """
+    q = db.query(ChatMessage).filter(ChatMessage.session_id == session_id)
+    if before_message_id is not None:
+        q = q.filter(ChatMessage.id < before_message_id)
+    q = q.order_by(ChatMessage.id.desc()).limit(PAST_N_MESSAGES + 1)
+    rows = q.all()
+    rows = list(reversed(rows))  # chronological
+    out: List[Dict[str, Any]] = []
+    for msg in rows:
+        entry: Dict[str, Any] = {"role": msg.role, "content": msg.content or ""}
+        if msg.role == "assistant" and getattr(msg, "message_metadata", None):
+            meta = msg.message_metadata or {}
+            chunks_meta = meta.get("chunks") or []
+            refs = _chunk_refs_in_content(entry["content"])
+            if refs and chunks_meta:
+                ref_set = set(refs)
+                matched = [c for c in chunks_meta if c.get("chunk_index") in ref_set]
+                # Keep order of first appearance in content
+                matched.sort(key=lambda c: refs.index(c["chunk_index"]) if c["chunk_index"] in refs else 999)
+                entry["chunks"] = matched[:MAX_CHUNKS_PER_PAST_MESSAGE]
+            else:
+                entry["chunks"] = []
+        else:
+            entry["chunks"] = []
+        out.append(entry)
+    return out
+
+
+def _ensure_session_for_request(
+    db: Any, current_user: Any, request: QueryRequest
+) -> int:
+    """
+    Ensure there is a ChatSession for this user + document.
+    If request.session_id is provided, validate ownership and return it.
+    Otherwise, create a new session and return its id.
+    """
+    if request.session_id is not None:
+        session = (
+            db.query(ChatSession)
+            .filter(
+                ChatSession.id == request.session_id,
+                ChatSession.user_id == current_user.id,
+                ChatSession.is_archived.is_(False),
+            )
+            .first()
         )
-        for c in result["chunks"]
-    ]
-    return QueryResponse(
-        answer=result["answer"],
-        document_id=result["document_id"],
-        query=result["query"],
-        retrieval_stats=result["retrieval_stats"],
-        chunk_analysis=result.get("chunk_analysis"),
-        chunks=chunks_detail,
-        debug_info=result.get("debug_info") or {},
-        next_questions=result.get("next_questions") or [],
+        if not session:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
+            )
+        if session.document_id != request.document_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Session does not belong to this document",
+            )
+        return session.id
+
+    # No session_id provided: create a new session for this document
+    session = ChatSession(
+        user_id=current_user.id,
+        document_id=request.document_id,
+        title=None,
     )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    return session.id
 
 
-@app.post("/query/stream", tags=["Retrieval"])
-async def query_document_stream(request: QueryRequest):
+@app.post("/query", tags=["Retrieval"])
+async def query_document(
+    request: QueryRequest,
+    db=Depends(get_db),
+    current_user=Depends(get_current_user),
+):
     """
-    True streaming endpoint: reuse the retrieval pipeline to decide which chunks
-    are relevant, then stream the LLM answer token-by-token (or chunk-by-chunk)
-    from the underlying model, similar to ChatGPT.
+    Single query endpoint: runs the LangGraph agent (llm.invoke) once, then
+    streams the agent's final answer to the client. No second LLM call;
+    /query and the streamed content are the same.
     """
+    # Ensure we have a session for this query
+    session_id = _ensure_session_for_request(db, current_user, request)
+
+    # Create and persist the user message immediately
+    user_msg = ChatMessage(
+        session_id=session_id,
+        role="user",
+        content=request.query,
+        message_metadata=None,
+    )
+    db.add(user_msg)
+    db.commit()
+    db.refresh(user_msg)
+
+    # Build past N messages for conversation context (content + chunks cited in answer, max 2 per message)
+    past_messages = _build_past_messages(db, session_id, before_message_id=user_msg.id)
+
     try:
-        # First run the normal query pipeline to get retrieval stats, chunks, and follow-ups.
-        # This uses the LangGraph-based agent and a non-streaming LLM call internally.
-        # We intentionally keep this so that /query and /query/stream stay consistent.
+        # Run the agent in streaming mode: it does retrieval and builds the answer
+        # prompt but does not call the LLM; we stream via llm.stream() below.
         result = document_service.query_document(
             request.document_id,
             request.query,
             include_chunks=request.include_chunks,
+            streaming=True,
+            past_messages=past_messages,
         )
     except ValueError as e:
         status_code = 400 if "query" in str(e).lower() else 404
         raise HTTPException(status_code=status_code, detail=str(e))
     except Exception as e:
-        logger.error(f"Error during streaming query (retrieval phase): {e}", exc_info=True)
+        logger.error(f"Error during query (retrieval phase): {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
 
-    # Load the underlying LLM so we can stream directly from it.
-    try:
-        agent_resources = document_service.load_agent_for_document(request.document_id)
-        llm = agent_resources.get("llm")
-        if llm is None:
-            raise RuntimeError("LLM not available for document")
-    except Exception as e:
-        logger.error(f"Error loading agent resources for streaming: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Streaming not available for this document")
-
-    # Build a prompt very similar to the one used in RetrievalAgentE.generate_final_answer,
-    # but using the chunks already returned by the service.
-    question = result.get("query") or request.query
-    chunks_for_answer = result.get("chunks") or []
-
-    chunk_blocks: List[str] = []
-    for c in chunks_for_answer:
-        cid = c.get("chunk_index")
-        heading = c.get("heading") or "No heading"
-        section = c.get("section_path") or "No section"
-        summary = c.get("summary") or ""
-        raw_content = c.get("content")
-        if isinstance(raw_content, list):
-            content_str = "\n".join(str(x) for x in raw_content)
-        else:
-            content_str = str(raw_content or "")
-        if len(content_str) > 500:
-            content_str = content_str[:500] + "..."
-        chunk_blocks.append(
-            f"\n[ChunkId: {cid}]\n"
-            f"Section: {section}\n"
-            f"Heading: {heading}\n"
-            f"Summary: {summary}\n"
-            f"Content: {content_str}\n"
-        )
-
-    context = "".join(chunk_blocks)
-    answer_prompt = f"""QUESTION (answer this using only the document chunks below):
-{question}
-
----
-Document chunks (use only this information):
-{context}
----
-
-Again, the question to answer is: {question}
-
-Write the answer in CLEAR, WELL-FORMATTED MARKDOWN:
-
-- Start with a one-line **Short Answer**.
-- Then add a **Detailed Explanation** section with 1–3 short paragraphs.
-- Use **bold subheadings** for important parts (for example: **Definition**, **Conditions**, **Exceptions**, **Important Dates**).
-- When listing items, steps, obligations, or conditions, use bullet points.
-- If the document does not state something explicitly, say that clearly (do not invent details).
-- VERY IMPORTANT: When you use information from one or more chunks, add citation markers at the end of the relevant sentence
-  using the following format, where ChunkId is the numeric id from the context above:
-  - Example with one source: This is some fact. [C12]
-  - Example with multiple sources: This is an important point. [C12][C27]
-  Only use ChunkIds that appear in the context (the [ChunkId: N] labels); do NOT make up ids.
-
-Answer (use only the chunks above; include citation markers as described):"""
+    is_page_summary = bool(result.get("is_page_summary"))
+    answer_prompt = result.get("answer_prompt")
+    final_answer_text = (result.get("answer") or "").strip()
 
     async def event_generator():
-        # First, send metadata (chunks, stats, follow-up questions) so the UI can
-        # render sources and suggested questions immediately.
         meta = {
             "type": "meta",
+            "session_id": session_id,
             "document_id": result["document_id"],
             "query": result["query"],
             "retrieval_stats": result["retrieval_stats"],
@@ -771,46 +838,96 @@ Answer (use only the chunks above; include citation markers as described):"""
             "chunk_analysis": result.get("chunk_analysis"),
             "debug_info": result.get("debug_info") or {},
             "next_questions": result.get("next_questions") or [],
+            "is_page_summary": result.get("is_page_summary", False),
+            "is_use_history": result.get("is_use_history", False),
+            "page_number": result.get("page_number"),
         }
         yield json.dumps(meta, ensure_ascii=False) + "\n"
 
-        # Then stream the answer directly from the underlying LLM whenever supported.
         streamed_any = False
+        full_answer_parts: List[str] = []
         try:
-            if hasattr(llm, "astream"):
-                async for chunk in llm.astream(answer_prompt):
-                    delta = _extract_stream_delta(chunk)
-                    if not delta:
-                        continue
-                    streamed_any = True
-                    yield json.dumps(
-                        {"type": "answer_chunk", "delta": delta},
-                        ensure_ascii=False,
-                    ) + "\n"
-            elif hasattr(llm, "stream"):
-                # Synchronous streaming; run in the same thread.
-                for chunk in llm.stream(answer_prompt):
-                    delta = _extract_stream_delta(chunk)
-                    if not delta:
-                        continue
-                    streamed_any = True
-                    yield json.dumps(
-                        {"type": "answer_chunk", "delta": delta},
-                        ensure_ascii=False,
-                    ) + "\n"
+            # True streaming or single response: when we have answer_prompt (normal Q&A or page-summary).
+            if answer_prompt:
+                try:
+                    agent_resources = document_service.load_agent_for_document(request.document_id)
+                    llm = agent_resources.get("llm")
+                except Exception as e:
+                    logger.error(f"Error loading LLM for streaming: {e}", exc_info=True)
+                    llm = None
+                if llm is not None and (hasattr(llm, "astream") or hasattr(llm, "stream")):
+                    # Actual token-level streaming (normal Q&A and page-summary)
+                    if hasattr(llm, "astream"):
+                        async for chunk in llm.astream(answer_prompt):
+                            delta = _extract_stream_delta(chunk)
+                            if not delta:
+                                continue
+                            streamed_any = True
+                            full_answer_parts.append(delta)
+                            yield json.dumps(
+                                {"type": "answer_chunk", "delta": delta},
+                                ensure_ascii=False,
+                            ) + "\n"
+                    else:
+                        # Sync llm.stream(): run in thread and feed queue for async yield
+                        loop = asyncio.get_event_loop()
+                        q: asyncio.Queue = asyncio.Queue()
+
+                        def produce():
+                            for chunk in llm.stream(answer_prompt):
+                                delta = _extract_stream_delta(chunk)
+                                if delta:
+                                    loop.call_soon_threadsafe(q.put_nowait, delta)
+                            loop.call_soon_threadsafe(q.put_nowait, None)
+
+                        loop.run_in_executor(None, produce)
+                        while True:
+                            delta = await q.get()
+                            if delta is None:
+                                break
+                            streamed_any = True
+                            full_answer_parts.append(delta)
+                            yield json.dumps(
+                                {"type": "answer_chunk", "delta": delta},
+                                ensure_ascii=False,
+                            ) + "\n"
+                else:
+                    # LLM has neither stream nor astream: use .invoke() and send full answer once (no streaming)
+                    if llm is not None:
+                        try:
+                            response = llm.invoke(answer_prompt)
+                            full_text = (
+                                (getattr(response, "content", None) or str(response)).strip()
+                                if response else ""
+                            )
+                            if full_text:
+                                streamed_any = True
+                                full_answer_parts.append(full_text)
+                                yield json.dumps(
+                                    {"type": "answer_chunk", "delta": full_text},
+                                    ensure_ascii=False,
+                                ) + "\n"
+                        except Exception as inv_err:
+                            logger.error(f"LLM invoke error: {inv_err}", exc_info=True)
+                    if not streamed_any:
+                        text_to_send = final_answer_text or "I could not generate an answer for this query."
+                        streamed_any = True
+                        full_answer_parts.append(text_to_send)
+                        yield json.dumps(
+                            {"type": "answer_chunk", "delta": text_to_send},
+                            ensure_ascii=False,
+                        ) + "\n"
             else:
-                # Fallback to one-shot and chunk the result, so the endpoint still works.
-                response = llm.invoke(answer_prompt)
-                full_text = (getattr(response, "content", None) or str(response)).strip()
-                for piece in _chunk_markdown(full_text):
-                    streamed_any = True
-                    yield json.dumps(
-                        {"type": "answer_chunk", "delta": piece},
-                        ensure_ascii=False,
-                    ) + "\n"
+                # No answer_prompt (e.g. page with no content, or error): send fallback once
+                text_to_send = final_answer_text or "I could not generate an answer for this query."
+                streamed_any = True
+                full_answer_parts.append(text_to_send)
+                yield json.dumps(
+                    {"type": "answer_chunk", "delta": text_to_send},
+                    ensure_ascii=False,
+                ) + "\n"
         except Exception as e:
             logger.error(f"Error during LLM streaming: {e}", exc_info=True)
-            # Send an error chunk so the frontend can surface it nicely
             yield json.dumps(
                 {"type": "error", "message": "Streaming failed while generating the answer."},
                 ensure_ascii=False,
@@ -822,6 +939,33 @@ Answer (use only the chunks above; include citation markers as described):"""
                 {"type": "answer_chunk", "delta": "I could not generate an answer for this query."},
                 ensure_ascii=False,
             ) + "\n"
+            # Persist a minimal assistant message
+            assistant_msg = ChatMessage(
+                session_id=session_id,
+                role="assistant",
+                content="I could not generate an answer for this query.",
+                message_metadata=None,
+            )
+            db.add(assistant_msg)
+            db.commit()
+        else:
+            # Persist the full assistant message with metadata
+            full_answer = "".join(full_answer_parts)
+            assistant_metadata = {
+                "retrieval_stats": result.get("retrieval_stats"),
+                "chunks": result.get("chunks"),
+                "next_questions": result.get("next_questions"),
+                "is_page_summary": is_page_summary,
+                "page_number": result.get("page_number"),
+            }
+            assistant_msg = ChatMessage(
+                session_id=session_id,
+                role="assistant",
+                content=full_answer,
+                message_metadata=assistant_metadata,
+            )
+            db.add(assistant_msg)
+            db.commit()
 
         # Signal completion
         yield json.dumps({"type": "done"}, ensure_ascii=False) + "\n"
@@ -833,8 +977,16 @@ Answer (use only the chunks above; include citation markers as described):"""
 async def visualize_graph(
     document_id: str = PathParam(..., description="Document ID"),
     viz_type: str = Query(default="interactive", description="Type: interactive, static, simplified"),
+    current_user=Depends(get_current_user),
 ):
     """Generate graph visualization"""
+    try:
+        document_service.ensure_document_belongs_to_user(document_id, current_user.id)
+    except ValueError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Document {document_id} not found",
+        )
     doc_path = get_document_path(document_id)
     plan_e_dir = doc_path / "E"
     
@@ -906,9 +1058,13 @@ async def visualize_graph(
 
 
 @app.get("/visualize/{document_id}/stats", tags=["Visualization"])
-async def get_graph_stats(document_id: str = PathParam(..., description="Document ID")):
+async def get_graph_stats(
+    document_id: str = PathParam(..., description="Document ID"),
+    current_user=Depends(get_current_user),
+):
     """Get graph statistics"""
     try:
+        document_service.ensure_document_belongs_to_user(document_id, current_user.id)
         return document_service.get_graph_stats(document_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -921,9 +1077,11 @@ async def get_graph_stats(document_id: str = PathParam(..., description="Documen
 async def summarize_page(
     document_id: str = PathParam(..., description="Document ID"),
     page_number: int = Query(..., description="Page number to summarize", gt=0),
+    current_user=Depends(get_current_user),
 ):
     """Generate comprehensive page-level summary and explanation"""
     try:
+        document_service.ensure_document_belongs_to_user(document_id, current_user.id)
         result = document_service.summarize_page(document_id, page_number)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

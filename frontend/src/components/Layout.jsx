@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Outlet, Link, useParams } from 'react-router-dom'
 import { useDocuments } from '../api/hooks'
+import { useAuth } from '../auth/AuthContext'
 
 function getDocumentDisplayName(doc) {
   if (!doc) return ''
@@ -35,6 +36,7 @@ function getInitialTheme() {
 
 export default function Layout() {
   const [theme, setTheme] = useState(getInitialTheme)
+  const { user, logout } = useAuth()
 
   useEffect(() => {
     if (typeof document === 'undefined') return
@@ -69,18 +71,32 @@ export default function Layout() {
                   </span>
                 </span>
               </Link>
-              <button
-                type="button"
-                onClick={toggleTheme}
-                className={`inline-flex h-8 w-8 items-center justify-center rounded-full border text-xs transition-colors ${
-                  theme === 'dark'
-                    ? 'border-slate-700/40 bg-slate-950/40 text-slate-300 hover:border-indigo-400 hover:text-indigo-300'
-                    : 'border-slate-300 bg-white text-slate-600 hover:border-indigo-300 hover:text-indigo-500'
-                }`}
-                aria-label="Toggle light / dark theme"
-              >
-                {theme === 'dark' ? '☾' : '☼'}
-              </button>
+              <div className="flex items-center gap-2">
+                {user && (
+                  <div className="text-[11px] text-slate-400 max-w-[120px] truncate" title={user.email}>
+                    {user.email}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={toggleTheme}
+                  className={`inline-flex h-8 w-8 items-center justify-center rounded-full border text-xs transition-colors ${
+                    theme === 'dark'
+                      ? 'border-slate-700/40 bg-slate-950/40 text-slate-300 hover:border-indigo-400 hover:text-indigo-300'
+                      : 'border-slate-300 bg-white text-slate-600 hover:border-indigo-300 hover:text-indigo-500'
+                  }`}
+                  aria-label="Toggle light / dark theme"
+                >
+                  {theme === 'dark' ? '☾' : '☼'}
+                </button>
+                <button
+                  type="button"
+                  onClick={logout}
+                  className="inline-flex items-center justify-center h-8 px-2 rounded-full border border-slate-700/60 text-[11px] text-slate-300 hover:border-red-400 hover:text-red-200"
+                >
+                  Logout
+                </button>
+              </div>
             </div>
           </div>
           <nav className="px-3 pt-3 pb-1">

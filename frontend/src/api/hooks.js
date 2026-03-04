@@ -10,6 +10,10 @@ import {
   uploadPdf,
   vectorize,
   queryDocument,
+  listChatSessions,
+  createChatSession,
+  getSessionMessages,
+  deleteDocument as deleteDocumentApi,
 } from './client'
 
 export const documentKeys = {
@@ -23,6 +27,14 @@ export function useDocuments() {
   return useQuery({
     queryKey: documentKeys.list(),
     queryFn: listDocuments,
+  })
+}
+
+export function useMarkdown(documentId) {
+  return useQuery({
+    queryKey: documentKeys.markdown(documentId),
+    queryFn: () => getMarkdown(documentId),
+    enabled: !!documentId,
   })
 }
 
@@ -63,14 +75,43 @@ export function useVectorize(documentId) {
 
 export function useQueryDocument(documentId) {
   return useMutation({
-    mutationFn: ({ query }) => queryDocument(documentId, query),
+    mutationFn: ({ query, sessionId }) => queryDocument(documentId, query, sessionId),
   })
 }
 
-export function useMarkdown(documentId) {
+export function useChatSessions(documentId) {
   return useQuery({
-    queryKey: documentKeys.markdown(documentId),
-    queryFn: () => getMarkdown(documentId),
+    queryKey: ['chat', 'sessions', documentId],
+    queryFn: () => listChatSessions(documentId),
     enabled: !!documentId,
+  })
+}
+
+export function useCreateChatSession(documentId) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (title) => createChatSession(documentId, title),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['chat', 'sessions', documentId] })
+    },
+  })
+}
+
+export function useSessionMessages(sessionId) {
+  return useQuery({
+    queryKey: ['chat', 'sessions', sessionId, 'messages'],
+    queryFn: () => getSessionMessages(sessionId),
+    enabled: !!sessionId,
+  })
+}
+
+export function useDeleteDocument(documentId) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => deleteDocumentApi(documentId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: documentKeys.list() })
+      qc.removeQueries({ queryKey: documentKeys.detail(documentId) })
+    },
   })
 }

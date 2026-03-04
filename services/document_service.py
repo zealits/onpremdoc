@@ -41,6 +41,8 @@ from vectorizerE import (
     DocumentGraph,
 )
 
+from db import SessionLocal, DocumentRecord, ChatSession
+
 logger = logging.getLogger(__name__)
 
 # Configuration - must match main.py layout
@@ -50,9 +52,53 @@ UPLOAD_DIR = Path("uploads")
 _loaded_agents: Dict[str, Dict[str, Any]] = {}
 
 
+def _get_document_record(document_id: str) -> Optional[DocumentRecord]:
+    db = SessionLocal()
+    try:
+        return (
+            db.query(DocumentRecord)
+            .filter(DocumentRecord.document_id == document_id)
+            .first()
+        )
+    finally:
+        db.close()
+
+
+def register_document_for_user(user_id: int, document_id: str) -> None:
+    """Create ownership record for a document."""
+    db = SessionLocal()
+    try:
+        rec = DocumentRecord(user_id=user_id, document_id=document_id)
+        db.add(rec)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def ensure_document_belongs_to_user(document_id: str, user_id: int) -> None:
+    """Raise ValueError if the document is not owned by this user."""
+    rec = _get_document_record(document_id)
+    if not rec or rec.user_id != user_id:
+        raise ValueError(f"Document {document_id} not found for this user")
+
+
+def get_document_path_for_user(user_id: int, document_id: str) -> Path:
+    """Path for a document owned by a specific user (for new uploads)."""
+    base = OUTPUT_DIR / f"user_{user_id}"
+    return base / document_id
+
+
 def get_document_path(document_id: str) -> Path:
-    """Get document output directory."""
-    return OUTPUT_DIR / document_id
+    """Get document output directory (resolves user-specific folder if known)."""
+    rec = _get_document_record(document_id)
+    if rec:
+        base = OUTPUT_DIR / f"user_{rec.user_id}"
+    else:
+        base = OUTPUT_DIR
+    return base / document_id
 
 
 def get_document_info(document_id: str) -> Optional[Dict[str, Any]]:
@@ -180,6 +226,77 @@ def get_document_info(document_id: str) -> Optional[Dict[str, Any]]:
         "doc_summary": doc_summary,
         "suggested_queries": suggested_queries,
     }
+
+
+def list_documents_for_user(user_id: int) -> List[Dict[str, Any]]:
+    """List all documents owned by a specific user."""
+    db = SessionLocal()
+    try:
+        records = (
+            db.query(DocumentRecord)
+            .filter(DocumentRecord.user_id == user_id)
+            .order_by(DocumentRecord.created_at.desc())
+            .all()
+        )
+    finally:
+        db.close()
+
+    docs: List[Dict[str, Any]] = []
+    for rec in records:
+        info = get_document_info(rec.document_id)
+        if info:
+            docs.append(info)
+    return docs
+
+
+def delete_document_for_user(user_id: int, document_id: str) -> None:
+    """
+    Delete a document and all related data (sessions, messages, ownership)
+    for the given user. Raises ValueError if the document does not belong
+    to the user.
+    """
+    # Ensure ownership
+    ensure_document_belongs_to_user(document_id, user_id)
+
+    # Delete files on disk
+    doc_path = get_document_path(document_id)
+    if doc_path.exists():
+        try:
+            shutil.rmtree(doc_path, ignore_errors=True)
+        except Exception as e:
+            logger.warning(f"Failed to remove document folder {doc_path}: {e}")
+
+    # Delete DB rows (chat sessions/messages via cascade, then ownership record)
+    db = SessionLocal()
+    try:
+        sessions = (
+            db.query(ChatSession)
+            .filter(
+                ChatSession.user_id == user_id,
+                ChatSession.document_id == document_id,
+            )
+            .all()
+        )
+        for s in sessions:
+            db.delete(s)
+
+        rec = (
+            db.query(DocumentRecord)
+            .filter(
+                DocumentRecord.user_id == user_id,
+                DocumentRecord.document_id == document_id,
+            )
+            .first()
+        )
+        if rec:
+            db.delete(rec)
+
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 def generate_quick_summary(document_id: str) -> str:
     """
@@ -377,11 +494,15 @@ def query_document(
     document_id: str,
     query: str,
     include_chunks: bool = True,
+    streaming: bool = False,
+    past_messages: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Run RAG query over a vectorized document. Returns dict with answer, retrieval_stats,
-    chunks (if include_chunks), chunk_analysis, debug_info. Raises ValueError if document
-    not ready or query empty.
+    chunks (if include_chunks), chunk_analysis, debug_info. When streaming=True, the
+    agent only builds the answer prompt (no LLM call); result includes "answer_prompt"
+    for the API to stream via llm.stream().
+    past_messages: optional list of {role, content, chunks} for conversation context.
     """
     query = (query or "").strip()
     if not query:
@@ -394,6 +515,9 @@ def query_document(
         "query": query,
         "is_page_summary": False,
         "page_number": None,
+        "streaming_mode": streaming,
+        "past_messages": past_messages or [],
+        "is_use_history": False,
         "seed_chunk_ids": [],
         "seed_chunk_scores": {},
         "graph_expanded_ids": [],
@@ -445,62 +569,93 @@ def query_document(
 
     chunks_out: List[Dict[str, Any]] = []
     if include_chunks:
-        for chunk in final_state.get("retrieved_chunks", []):
-            cid = chunk.metadata.get("chunk_index")
-            if cid is None:
-                continue
-            raw_lines = chunk.metadata.get("raw_content_lines")
-            content_for_api = raw_lines if isinstance(raw_lines, list) else chunk.page_content
-            source = "seed" if cid in seed_chunk_ids else ("graph_expanded" if cid in graph_expanded_ids else "initial")
-            chunks_out.append({
-                "chunk_index": cid,
-                "content": content_for_api,
-                "heading": chunk.metadata.get("heading", "No heading"),
-                "section_path": chunk.metadata.get("section_path", ""),
-                "section_title": chunk.metadata.get("section_title", ""),
-                "page_number": chunk.metadata.get("page_number"),
-                "page_classification": chunk.metadata.get("page_classification"),
-                "summary": chunk.metadata.get("summary", ""),
-                "chunk_type": chunk.metadata.get("chunk_type", "text"),
-                "has_table": chunk.metadata.get("has_table", False),
-                "table_context": chunk.metadata.get("table_context"),
-                "start_line": chunk.metadata.get("start_line"),
-                "content_length": len(chunk.page_content),
-                "retrieval_source": source,
-                "similarity_score": seed_chunk_scores.get(cid),
-                "rerank_score": rerank_scores.get(cid),
-            })
-        for chunk in final_state.get("second_retrieval_chunks", []):
-            cid = chunk.metadata.get("chunk_index")
-            if cid is None or any(c["chunk_index"] == cid for c in chunks_out):
-                continue
-            raw_lines = chunk.metadata.get("raw_content_lines")
-            content_for_api = raw_lines if isinstance(raw_lines, list) else chunk.page_content
-            source = "second_seed" if cid in second_seed_ids else ("second_expanded" if cid in second_expanded_ids else "second_retrieval")
-            chunks_out.append({
-                "chunk_index": cid,
-                "content": content_for_api,
-                "heading": chunk.metadata.get("heading", "No heading"),
-                "section_path": chunk.metadata.get("section_path", ""),
-                "section_title": chunk.metadata.get("section_title", ""),
-                "page_number": chunk.metadata.get("page_number"),
-                "page_classification": chunk.metadata.get("page_classification"),
-                "summary": chunk.metadata.get("summary", ""),
-                "chunk_type": chunk.metadata.get("chunk_type", "text"),
-                "has_table": chunk.metadata.get("has_table", False),
-                "table_context": chunk.metadata.get("table_context"),
-                "start_line": chunk.metadata.get("start_line"),
-                "content_length": len(chunk.page_content),
-                "retrieval_source": source,
-                "similarity_score": second_seed_scores.get(cid),
-                "rerank_score": rerank_scores.get(cid),
-            })
-        # Return only chunks that were actually sent to the LLM for the answer (if tracked)
-        used_ids = final_state.get("chunk_indices_used_for_answer")
-        if used_ids is not None and isinstance(used_ids, (set, list)):
-            used_set = set(used_ids)
-            chunks_out = [c for c in chunks_out if c["chunk_index"] in used_set]
-        chunks_out.sort(key=lambda c: c["chunk_index"])
+        # Page summary: build chunks from loaded agent's chunks using page_summary_chunk_indices
+        if final_state.get("is_page_summary") and final_state.get("page_summary_chunk_indices") is not None:
+            id_set = set(final_state["page_summary_chunk_indices"])
+            resources = _loaded_agents.get(document_id)
+            all_chunks = list(resources.get("chunks", [])) if resources else []
+            for chunk in all_chunks:
+                cid = chunk.metadata.get("chunk_index")
+                if cid is None or cid not in id_set:
+                    continue
+                raw_lines = chunk.metadata.get("raw_content_lines")
+                content_for_api = raw_lines if isinstance(raw_lines, list) else chunk.page_content
+                chunks_out.append({
+                    "chunk_index": cid,
+                    "content": content_for_api,
+                    "heading": chunk.metadata.get("heading", "No heading"),
+                    "section_path": chunk.metadata.get("section_path", ""),
+                    "section_title": chunk.metadata.get("section_title", ""),
+                    "page_number": chunk.metadata.get("page_number"),
+                    "page_classification": chunk.metadata.get("page_classification"),
+                    "summary": chunk.metadata.get("summary", ""),
+                    "chunk_type": chunk.metadata.get("chunk_type", "text"),
+                    "has_table": chunk.metadata.get("has_table", False),
+                    "table_context": chunk.metadata.get("table_context"),
+                    "start_line": chunk.metadata.get("start_line"),
+                    "content_length": len(chunk.page_content),
+                    "retrieval_source": "page_summary",
+                    "similarity_score": None,
+                    "rerank_score": None,
+                })
+            chunks_out.sort(key=lambda c: c["chunk_index"])
+        else:
+            for chunk in final_state.get("retrieved_chunks", []):
+                cid = chunk.metadata.get("chunk_index")
+                if cid is None:
+                    continue
+                raw_lines = chunk.metadata.get("raw_content_lines")
+                content_for_api = raw_lines if isinstance(raw_lines, list) else chunk.page_content
+                source = "seed" if cid in seed_chunk_ids else ("graph_expanded" if cid in graph_expanded_ids else "initial")
+                chunks_out.append({
+                    "chunk_index": cid,
+                    "content": content_for_api,
+                    "heading": chunk.metadata.get("heading", "No heading"),
+                    "section_path": chunk.metadata.get("section_path", ""),
+                    "section_title": chunk.metadata.get("section_title", ""),
+                    "page_number": chunk.metadata.get("page_number"),
+                    "page_classification": chunk.metadata.get("page_classification"),
+                    "summary": chunk.metadata.get("summary", ""),
+                    "chunk_type": chunk.metadata.get("chunk_type", "text"),
+                    "has_table": chunk.metadata.get("has_table", False),
+                    "table_context": chunk.metadata.get("table_context"),
+                    "start_line": chunk.metadata.get("start_line"),
+                    "content_length": len(chunk.page_content),
+                    "retrieval_source": source,
+                    "similarity_score": seed_chunk_scores.get(cid),
+                    "rerank_score": rerank_scores.get(cid),
+                })
+            for chunk in final_state.get("second_retrieval_chunks", []):
+                cid = chunk.metadata.get("chunk_index")
+                if cid is None or any(c["chunk_index"] == cid for c in chunks_out):
+                    continue
+                raw_lines = chunk.metadata.get("raw_content_lines")
+                content_for_api = raw_lines if isinstance(raw_lines, list) else chunk.page_content
+                source = "second_seed" if cid in second_seed_ids else ("second_expanded" if cid in second_expanded_ids else "second_retrieval")
+                chunks_out.append({
+                    "chunk_index": cid,
+                    "content": content_for_api,
+                    "heading": chunk.metadata.get("heading", "No heading"),
+                    "section_path": chunk.metadata.get("section_path", ""),
+                    "section_title": chunk.metadata.get("section_title", ""),
+                    "page_number": chunk.metadata.get("page_number"),
+                    "page_classification": chunk.metadata.get("page_classification"),
+                    "summary": chunk.metadata.get("summary", ""),
+                    "chunk_type": chunk.metadata.get("chunk_type", "text"),
+                    "has_table": chunk.metadata.get("has_table", False),
+                    "table_context": chunk.metadata.get("table_context"),
+                    "start_line": chunk.metadata.get("start_line"),
+                    "content_length": len(chunk.page_content),
+                    "retrieval_source": source,
+                    "similarity_score": second_seed_scores.get(cid),
+                    "rerank_score": rerank_scores.get(cid),
+                })
+            # Return only chunks that were actually sent to the LLM for the answer (if tracked)
+            used_ids = final_state.get("chunk_indices_used_for_answer")
+            if used_ids is not None and isinstance(used_ids, (set, list)):
+                used_set = set(used_ids)
+                chunks_out = [c for c in chunks_out if c["chunk_index"] in used_set]
+            chunks_out.sort(key=lambda c: c["chunk_index"])
 
     debug_info = dict(final_state.get("debug_info", {}))
     if rerank_scores:
@@ -511,7 +666,7 @@ def query_document(
             "min_score": min(rerank_scores.values()),
         }
 
-    return {
+    out: Dict[str, Any] = {
         "answer": final_state.get("final_answer", "No answer generated"),
         "document_id": document_id,
         "query": query,
@@ -519,9 +674,14 @@ def query_document(
         "chunk_analysis": final_state.get("chunk_analysis"),
         "chunks": chunks_out,
         "debug_info": debug_info,
-        # Suggested follow-up questions for UI to show under the answer
+        "is_page_summary": final_state.get("is_page_summary", False),
+        "is_use_history": final_state.get("is_use_history", False),
+        "page_number": final_state.get("page_number"),
         "next_questions": final_state.get("next_questions") or [],
     }
+    if streaming and final_state.get("answer_prompt"):
+        out["answer_prompt"] = final_state["answer_prompt"]
+    return out
 
 
 def summarize_page(document_id: str, page_number: int) -> Dict[str, Any]:

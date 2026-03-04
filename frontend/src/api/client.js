@@ -11,12 +11,40 @@ const getBaseUrl = () => {
 
 const base = () => getBaseUrl()
 
+const AUTH_TOKEN_KEY = 'onpremdoc-auth-token'
+
+export function setAuthToken(token) {
+  try {
+    if (token) {
+      window.localStorage.setItem(AUTH_TOKEN_KEY, token)
+    } else {
+      window.localStorage.removeItem(AUTH_TOKEN_KEY)
+    }
+  } catch {
+    // ignore
+  }
+}
+
+export function getAuthToken() {
+  try {
+    return window.localStorage.getItem(AUTH_TOKEN_KEY) || null
+  } catch {
+    return null
+  }
+}
+
+export function clearAuthToken() {
+  setAuthToken(null)
+}
+
 async function request(path, options = {}) {
   const url = `${base()}${path}`
+  const token = getAuthToken()
   const res = await fetch(url, {
     ...options,
     headers: {
       ...(options.headers || {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
   })
   if (!res.ok) {
@@ -43,10 +71,20 @@ export function getMarkdownUrl(documentId) {
 
 export async function getMarkdown(documentId) {
   const url = getMarkdownUrl(documentId)
-  const res = await fetch(url)
+  const token = getAuthToken()
+  const res = await fetch(url, {
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  })
   if (!res.ok) {
     const text = await res.text()
-    throw new Error(text || `HTTP ${res.status}`)
+    let message = text
+    try {
+      const j = JSON.parse(text)
+      message = j.detail || j.error || text
+    } catch (_) {}
+    throw new Error(message || `HTTP ${res.status}`)
   }
   return res.text()
 }
@@ -73,20 +111,24 @@ export async function vectorize(documentId) {
   return request(`/vectorize/${documentId}`, { method: 'POST' })
 }
 
-export async function queryDocument(documentId, query, includeChunks = true) {
+export async function queryDocument(documentId, query, sessionId = null, includeChunks = true) {
   return request('/query', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ document_id: documentId, query, include_chunks: includeChunks }),
+    body: JSON.stringify({ document_id: documentId, query, include_chunks: includeChunks, session_id: sessionId }),
   })
 }
 
-export async function queryDocumentStream(documentId, query, includeChunks = true, onChunk) {
-  const url = `${base()}/query/stream`
+export async function queryDocumentStream(documentId, query, sessionId = null, includeChunks = true, onChunk) {
+  const url = `${base()}/query`
+  const token = getAuthToken()
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ document_id: documentId, query, include_chunks: includeChunks }),
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ document_id: documentId, query, include_chunks: includeChunks, session_id: sessionId }),
   })
   if (!res.ok) {
     const text = await res.text()
@@ -149,4 +191,47 @@ export async function queryDocumentStream(documentId, query, includeChunks = tru
       // ignore
     }
   }
+}
+
+export async function signup(email, password) {
+  return request('/auth/signup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  })
+}
+
+export async function login(email, password) {
+  return request('/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  })
+}
+
+export async function getCurrentUser() {
+  return request('/auth/me')
+}
+
+export async function listChatSessions(documentId) {
+  const query = documentId ? `?document_id=${encodeURIComponent(documentId)}` : ''
+  return request(`/chat/sessions${query}`)
+}
+
+export async function createChatSession(documentId, title = null) {
+  return request('/chat/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ document_id: documentId, title }),
+  })
+}
+
+export async function getSessionMessages(sessionId) {
+  return request(`/chat/sessions/${sessionId}/messages`)
+}
+
+export async function deleteDocument(documentId) {
+  return request(`/documents/${documentId}`, {
+    method: 'DELETE',
+  })
 }
