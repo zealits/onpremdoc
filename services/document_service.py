@@ -341,8 +341,10 @@ Text fragments:
 """
 
     response = llm.invoke(prompt)
-
-    return response.content.strip()
+    # Some providers (e.g. OpenAI) return an object with a .content attribute,
+    # others (e.g. Ollama) may return a plain string. Handle both.
+    text = getattr(response, "content", None) or str(response)
+    return text.strip()
 
 def load_agent_for_document(document_id: str) -> Dict[str, Any]:
     """Load agent resources for a document. Raises ValueError if not vectorized or files missing."""

@@ -96,11 +96,15 @@ function CitationButton({ chunkId, chunks, onHighlight }) {
     const contentStr = Array.isArray(chunk.content)
       ? chunk.content.join('\n')
       : (chunk.content ?? '')
+    const lines = Array.isArray(chunk.content)
+      ? chunk.content.filter((s) => typeof s === 'string' && s.trim().length > 0)
+      : []
     onHighlight({
       pageNumber: chunk.page_number,
       text: contentStr,
       sectionTitle: chunk.section_title,
       heading: chunk.heading,
+      lines,
     })
   }
   return (
