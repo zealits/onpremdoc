@@ -307,8 +307,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Document Processing API",
-    description="API for PDF processing, vectorization, graph-based retrieval, and visualization",
+    title="DocOnPrem API",
+    description="On-premises document pipeline: PDF processing, vectorization, graph-based retrieval, and visualization",
     version="1.0.0",
     lifespan=lifespan,
 )

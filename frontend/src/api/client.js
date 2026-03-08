@@ -11,7 +11,7 @@ const getBaseUrl = () => {
 
 const base = () => getBaseUrl()
 
-const AUTH_TOKEN_KEY = 'onpremdoc-auth-token'
+const AUTH_TOKEN_KEY = 'doconprem-auth-token'
 
 export function setAuthToken(token) {
   try {

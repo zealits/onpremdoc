@@ -22,10 +22,10 @@ This repo’s MCP server can run in two modes. Use **Streamable HTTP** for the I
 
 ### 1. Start the MCP server in HTTP mode
 
-From the **project root** (`onpremdoc`), in a separate terminal:
+From the **project root** (DocOnPrem), in a separate terminal:
 
 ```bash
-cd D:\Projects\DocProcessing\zealits\onpremdoc
+cd D:\Projects\DocOnPrem
 python mcp_server.py --http
 ```
 
@@ -68,9 +68,9 @@ If you prefer not to run `--http`:
 1. In Inspector, choose **STDIO**.
 2. **Do not leave the default** — the Inspector starts with a sample server name like `mcp-server-everything`, which is not installed and will fail with `spawn mcp-server-everything ENOENT`.
 3. Set:
-   - **Command:** `python` (or full path to your Python, e.g. `D:\Projects\DocProcessing\zealits\onpremdoc\.venv\Scripts\python.exe`).
-   - **Arguments:** `mcp_server.py` (or full path: `D:\Projects\DocProcessing\zealits\onpremdoc\mcp_server.py`).
-   - **Working directory:** project root, e.g. `D:\Projects\DocProcessing\zealits\onpremdoc`.
+   - **Command:** `python` (or full path to your Python, e.g. `D:\Projects\DocOnPrem\.venv\Scripts\python.exe`).
+   - **Arguments:** `mcp_server.py` (or full path: `D:\Projects\DocOnPrem\mcp_server.py`).
+   - **Working directory:** project root, e.g. `D:\Projects\DocOnPrem`.
 4. Click **Connect**; the Inspector will spawn the server process.
 
 This uses the same process as Cursor: stdio transport, one server per client.

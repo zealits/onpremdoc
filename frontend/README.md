@@ -1,6 +1,6 @@
 # Chat PDF Frontend
 
-React + Vite frontend for the OnPremDoc backend. PDF-only chat UI: upload a PDF, wait for processing and vectorization, then view the PDF and ask questions.
+React + Vite frontend for the DocOnPrem backend. PDF-only chat UI: upload a PDF, wait for processing and vectorization, then view the PDF and ask questions.
 
 ## Setup
 

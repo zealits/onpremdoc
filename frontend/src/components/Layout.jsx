@@ -25,7 +25,7 @@ function getDocumentDisplayName(doc) {
 function getInitialTheme() {
   if (typeof window === 'undefined') return 'dark'
   try {
-    const stored = window.localStorage.getItem('onpremdoc-theme')
+    const stored = window.localStorage.getItem('doconprem-theme')
     if (stored === 'light' || stored === 'dark') return stored
     const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches
     return prefersDark ? 'dark' : 'light'
@@ -42,7 +42,7 @@ export default function Layout() {
     if (typeof document === 'undefined') return
     document.documentElement.dataset.theme = theme
     try {
-      window.localStorage.setItem('onpremdoc-theme', theme)
+      window.localStorage.setItem('doconprem-theme', theme)
     } catch {
       // ignore
     }
@@ -61,11 +61,11 @@ export default function Layout() {
               <div className="flex items-center justify-between gap-2 min-w-0">
                 <Link to="/" className="flex items-center gap-3 group min-w-0 flex-shrink-0">
                   <span className="inline-flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-xs font-semibold text-white shadow-sm group-hover:shadow-md transition-shadow">
-                    CD
+                    DoP
                   </span>
                   <span className="flex flex-col min-w-0">
                     <span className="text-sm font-semibold tracking-tight group-hover:text-indigo-500 truncate">
-                      Chat Document
+                      DocOnPrem
                     </span>
                     <span className="text-[11px] theme-sidebar-muted truncate">
                       Ask questions over any PDF

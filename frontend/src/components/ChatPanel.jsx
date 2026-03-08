@@ -8,8 +8,8 @@ const DEFAULT_SUGGESTED = [
 ]
 
 const CITATION_REGEX = /\[C(\d+)\]/g
-const CHAT_STORAGE_KEY = 'onpremdoc-chat'
-const SESSION_STORAGE_KEY_PREFIX = 'onpremdoc-session-'
+const CHAT_STORAGE_KEY = 'doconprem-chat'
+const SESSION_STORAGE_KEY_PREFIX = 'doconprem-session-'
 
 function getStoredSessionId(documentId) {
   if (!documentId) return null

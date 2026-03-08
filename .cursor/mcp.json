@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "onpremdoc": {
+    "doconprem": {
       "command": "C:/Users/9421309441/Desktop/Ongoing Project/onpremdoc/.venv/Scripts/python.exe",
       "args": ["mcp_server.py"],
       "cwd": "C:/Users/9421309441/Desktop/Ongoing Project/onpremdoc"
