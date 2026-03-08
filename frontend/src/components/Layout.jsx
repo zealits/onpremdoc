@@ -57,46 +57,51 @@ export default function Layout() {
       <div className="flex h-full w-full">
         <aside className="w-64 flex-shrink-0 border-r theme-sidebar backdrop-blur-xl flex flex-col">
           <div className="px-4 py-4 border-b theme-sidebar">
-            <div className="flex items-center justify-between gap-3">
-              <Link to="/" className="flex items-center gap-3 group">
-                <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-xs font-semibold text-white shadow-sm group-hover:shadow-md transition-shadow">
-                  CD
-                </span>
-                <span className="flex flex-col">
-                  <span className="text-sm font-semibold tracking-tight group-hover:text-indigo-500">
-                    Chat Document
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center justify-between gap-2 min-w-0">
+                <Link to="/" className="flex items-center gap-3 group min-w-0 flex-shrink-0">
+                  <span className="inline-flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-xs font-semibold text-white shadow-sm group-hover:shadow-md transition-shadow">
+                    CD
                   </span>
-                  <span className="text-[11px] theme-sidebar-muted">
-                    Ask questions over any PDF
+                  <span className="flex flex-col min-w-0">
+                    <span className="text-sm font-semibold tracking-tight group-hover:text-indigo-500 truncate">
+                      Chat Document
+                    </span>
+                    <span className="text-[11px] theme-sidebar-muted truncate">
+                      Ask questions over any PDF
+                    </span>
                   </span>
-                </span>
-              </Link>
-              <div className="flex items-center gap-2">
-                {user && (
-                  <div className="text-[11px] text-slate-400 max-w-[120px] truncate" title={user.email}>
-                    {user.email}
-                  </div>
-                )}
+                </Link>
                 <button
                   type="button"
                   onClick={toggleTheme}
-                  className={`inline-flex h-8 w-8 items-center justify-center rounded-full border text-xs transition-colors ${
+                  className={`inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border transition-all duration-200 ${
                     theme === 'dark'
-                      ? 'border-slate-700/40 bg-slate-950/40 text-slate-300 hover:border-indigo-400 hover:text-indigo-300'
-                      : 'border-slate-300 bg-white text-slate-600 hover:border-indigo-300 hover:text-indigo-500'
+                      ? 'border-slate-600 bg-slate-800/60 text-amber-300 hover:bg-slate-700/80 hover:text-amber-200'
+                      : 'border-slate-300 bg-slate-100 text-amber-600 hover:bg-slate-200 hover:text-amber-700'
                   }`}
-                  aria-label="Toggle light / dark theme"
+                  aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+                  title={theme === 'dark' ? 'Light mode' : 'Dark mode'}
                 >
-                  {theme === 'dark' ? '☾' : '☼'}
-                </button>
-                <button
-                  type="button"
-                  onClick={logout}
-                  className="inline-flex items-center justify-center h-8 px-2 rounded-full border border-slate-700/60 text-[11px] text-slate-300 hover:border-red-400 hover:text-red-200"
-                >
-                  Logout
+                  {theme === 'dark' ? (
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20" aria-hidden>
+                      <path d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z" />
+                    </svg>
+                  ) : (
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20" aria-hidden>
+                      <path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z" />
+                    </svg>
+                  )}
                 </button>
               </div>
+              {user && (
+                <p
+                  className="text-[11px] theme-sidebar-muted truncate min-w-0 w-full"
+                  title={user.email}
+                >
+                  {user.email}
+                </p>
+              )}
             </div>
           </div>
           <nav className="px-3 pt-3 pb-1">
@@ -113,6 +118,18 @@ export default function Layout() {
               Chats
             </p>
             <DocumentList />
+          </div>
+          <div className="px-3 py-3 border-t theme-sidebar flex-shrink-0">
+            <button
+              type="button"
+              onClick={logout}
+              className="sidebar-logout-btn w-full inline-flex items-center justify-center gap-2 h-9 rounded-lg border border-slate-600 text-sm text-slate-300 hover:border-red-400/60 hover:bg-red-500/10 hover:text-red-200 transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+              </svg>
+              Logout
+            </button>
           </div>
         </aside>
         <main className="flex-1 overflow-hidden flex flex-col min-w-0 theme-main">

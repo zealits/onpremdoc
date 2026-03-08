@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { useDocument, useVectorize, useDeleteDocument } from '../api/hooks'
+import { useDocument, useDocumentSummary, useVectorize, useDeleteDocument } from '../api/hooks'
 import MarkdownViewer from '../components/MarkdownViewer'
 import ChatPanel from '../components/ChatPanel'
 
@@ -54,6 +54,13 @@ export default function DocumentPage() {
   }, [doc?.status, doc?.markdown_path])
 
   const ready = doc?.status === 'ready'
+  const { data: summaryData, isLoading: isSummaryLoading, isError: isSummaryError } = useDocumentSummary(documentId, {
+    enabled: !!documentId && ready,
+  })
+  const displaySummary = summaryData?.summary ?? doc?.doc_summary ?? (isSummaryError ? 'Summary could not be loaded. Ask a question below.' : null)
+  const displaySuggestedQueries = (summaryData?.suggested_queries?.length ? summaryData.suggested_queries : doc?.suggested_queries) ?? null
+  const showSummaryLoading = ready && isSummaryLoading
+  const showSummaryBlock = ready && (displaySummary || showSummaryLoading)
 
   if (isLoading && !doc) {
     return (
@@ -200,6 +207,11 @@ export default function DocumentPage() {
           <ChatPanel
             documentId={documentId}
             documentReady={ready}
+            documentSummary={displaySummary}
+            suggestedQueries={displaySuggestedQueries}
+            documentName={getDocumentDisplayName(doc, documentId)}
+            isSummaryLoading={showSummaryLoading}
+            showSummaryBlock={showSummaryBlock}
             onHighlightChunk={(chunk) => {
               setActiveHighlight(chunk)
               setIsMarkdownOpen(true)

@@ -6,6 +6,7 @@ import {
 import {
   listDocuments,
   getDocument,
+  getDocumentSummary,
   getMarkdown,
   uploadPdf,
   vectorize,
@@ -48,6 +49,18 @@ export function useDocument(documentId, options = {}) {
       if (data.status === 'ready' || data.status === 'uploaded') return false
       return 2000
     },
+    ...options,
+  })
+}
+
+export function useDocumentSummary(documentId, options = {}) {
+  return useQuery({
+    queryKey: [...documentKeys.detail(documentId), 'summary'],
+    queryFn: () => getDocumentSummary(documentId),
+    enabled: !!documentId && !!(options.enabled !== false),
+    staleTime: 5 * 60 * 1000,
+    retry: 2,
+    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 5000),
     ...options,
   })
 }

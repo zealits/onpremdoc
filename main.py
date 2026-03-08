@@ -382,6 +382,38 @@ def _extract_stream_delta(chunk: Any) -> str:
     return ""
 
 
+def _user_facing_error_message(exc: Exception) -> str:
+    """
+    Extract a short, user-facing message from an exception (e.g. OpenAI 402 credits error).
+    """
+    # OpenAI-style API error: body may be a dict with 'error' key
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict) and isinstance(body.get("error"), str):
+        return body["error"].strip()
+    # Response body (e.g. from HTTP client)
+    try:
+        resp = getattr(exc, "response", None)
+        if resp is not None and hasattr(resp, "json"):
+            data = resp.json()
+            if isinstance(data, dict) and isinstance(data.get("error"), str):
+                return data["error"].strip()
+    except Exception:
+        pass
+    msg = str(exc).strip()
+    # Extract from "Error code: XXX - {'error': '...'}" style messages
+    if "'error':" in msg or '"error":' in msg:
+        match = re.search(r"['\"]error['\"]\s*:\s*['\"]([^'\"]+)['\"]", msg)
+        if match:
+            return match.group(1).strip()
+    if msg.startswith("Error code:"):
+        idx = msg.find(" - ")
+        if idx != -1:
+            msg = msg[idx + 3 :].strip()
+    if len(msg) > 600:
+        msg = msg[:597] + "..."
+    return msg or "An error occurred while generating the answer."
+
+
 # ---------------- API ENDPOINTS ----------------
 
 
@@ -457,6 +489,49 @@ async def get_markdown(
         raise HTTPException(status_code=404, detail=str(e))
     from fastapi.responses import Response
     return Response(content=content, media_type="text/plain")
+
+
+class DocumentSummaryResponse(BaseModel):
+    """Document summary for display when overview is missing."""
+    summary: str
+    suggested_queries: Optional[List[str]] = None
+
+
+@app.get("/documents/{document_id}/summary", response_model=DocumentSummaryResponse, tags=["Documents"])
+async def get_document_summary(
+    document_id: str = PathParam(..., description="Document ID"),
+    current_user=Depends(get_current_user),
+):
+    """Get document summary. Returns stored overview if present, otherwise generates a quick summary. Always returns 200 with a message."""
+    fallback = "This document is ready. You can ask questions below to explore it."
+    try:
+        try:
+            document_service.ensure_document_belongs_to_user(document_id, current_user.id)
+        except ValueError:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Document {document_id} not found",
+            )
+        doc_info = get_document_info(document_id)
+        if not doc_info:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Document {document_id} not found",
+            )
+        if (doc_info.doc_summary or "").strip():
+            return DocumentSummaryResponse(
+                summary=doc_info.doc_summary.strip(),
+                suggested_queries=doc_info.suggested_queries,
+            )
+        summary = document_service.generate_quick_summary(document_id)
+        if summary and summary.strip():
+            return DocumentSummaryResponse(summary=summary.strip(), suggested_queries=None)
+        return DocumentSummaryResponse(summary=fallback, suggested_queries=None)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"Document summary failed for {document_id}: {e}", exc_info=True)
+        return DocumentSummaryResponse(summary=fallback, suggested_queries=None)
 
 
 @app.get("/documents/{document_id}/confidence", response_model=ConfidenceResponse, tags=["Documents"])
@@ -928,8 +1003,9 @@ async def query_document(
                 ) + "\n"
         except Exception as e:
             logger.error(f"Error during LLM streaming: {e}", exc_info=True)
+            user_message = _user_facing_error_message(e)
             yield json.dumps(
-                {"type": "error", "message": "Streaming failed while generating the answer."},
+                {"type": "error", "message": user_message},
                 ensure_ascii=False,
             ) + "\n"
 

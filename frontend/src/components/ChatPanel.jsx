@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { queryDocumentStream } from '../api/client'
 
-const SUGGESTED = [
+const DEFAULT_SUGGESTED = [
   'What is this document about?',
   'Summarize the main points.',
 ]
@@ -119,7 +119,8 @@ function CitationButton({ chunkId, chunks, onHighlight }) {
   )
 }
 
-function ChatPanel({ documentId, documentReady, onHighlightChunk }) {
+function ChatPanel({ documentId, documentReady, documentSummary, suggestedQueries, documentName, isSummaryLoading, showSummaryBlock, onHighlightChunk }) {
+  const suggested = (Array.isArray(suggestedQueries) && suggestedQueries.length > 0) ? suggestedQueries : DEFAULT_SUGGESTED
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const bottomRef = useRef(null)
@@ -257,11 +258,29 @@ function ChatPanel({ documentId, documentReady, onHighlightChunk }) {
     <div className="chat-shell flex flex-col h-full min-h-0 px-3 py-3 sm:px-4 sm:py-4 border-l border-slate-800">
       <div className="flex flex-col h-full min-h-0 rounded-2xl theme-card shadow-[0_18px_60px_rgba(15,23,42,0.25)]">
         <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-4 pt-4 pb-2 space-y-4 column-scroll">
+        {((showSummaryBlock == null ? (documentSummary || (documentReady && isSummaryLoading)) : showSummaryBlock)) && (
+          <div className="document-summary mb-4 pb-4 border-b border-slate-600/60">
+            <h2 className="text-base font-semibold mb-1 text-inherit">
+              {documentName || 'Document'} summary
+            </h2>
+            <p className="text-xs theme-sidebar-muted mb-2">1 source</p>
+            {isSummaryLoading ? (
+              <div className="text-sm theme-sidebar-muted flex items-center gap-2">
+                <span className="inline-block w-4 h-4 rounded-full border-2 border-indigo-400/60 border-t-indigo-300 animate-spin" />
+                Loading summary…
+              </div>
+            ) : (
+              <div className="text-sm leading-relaxed whitespace-pre-line max-w-none text-inherit">
+                {documentSummary}
+              </div>
+            )}
+          </div>
+        )}
         {messages.length === 0 && (
           <div className="text-sm space-y-3">
             <p className="font-medium">Ask anything about this document.</p>
             <div className="flex flex-wrap gap-2">
-              {SUGGESTED.map((q) => (
+              {suggested.map((q) => (
                 <button
                   key={q}
                   type="button"
@@ -369,7 +388,7 @@ function ChatPanel({ documentId, documentReady, onHighlightChunk }) {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="Ask any question…"
-            className="flex-1 px-4 py-2.5 rounded-xl bg-slate-900/70 border border-slate-700/80 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/80 focus:border-transparent"
+            className="chat-input flex-1 px-4 py-2.5 rounded-xl bg-slate-900/70 border border-slate-700/80 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/80 focus:border-transparent"
             disabled={isStreaming}
             aria-label="Ask a question"
           />

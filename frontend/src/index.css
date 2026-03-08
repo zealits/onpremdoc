@@ -215,6 +215,13 @@ html[data-theme='light'] .upload-helper {
   color: #6b7280;
 }
 
+/* Upload area icon: light theme */
+html[data-theme='light'] .upload-icon-box {
+  background-color: #eef2ff;
+  border-color: #c7d2fe;
+  color: #4f46e5;
+}
+
 .markdown-highlight {
   background-color: rgba(30, 64, 175, 0.9);
   box-shadow: 0 0 0 2px rgba(191, 219, 254, 0.9);
@@ -266,4 +273,54 @@ html[data-theme='light'] .upload-helper {
 
 .column-scroll::-webkit-scrollbar-thumb:hover {
   background: linear-gradient(to bottom, #6366f1, #c084fc);
+}
+
+/* Light theme: scrollbar */
+html[data-theme='light'] .column-scroll {
+  scrollbar-color: #cbd5e1 #f1f5f9;
+}
+
+html[data-theme='light'] .column-scroll::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+
+html[data-theme='light'] .column-scroll::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 999px;
+}
+
+html[data-theme='light'] .column-scroll::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Chat input: light theme */
+.chat-input {
+  transition: background-color 0.2s, border-color 0.2s, color 0.2s;
+}
+
+html[data-theme='light'] .chat-input {
+  background-color: #ffffff;
+  border-color: #e5e7eb;
+  color: #111827;
+}
+
+html[data-theme='light'] .chat-input::placeholder {
+  color: #6b7280;
+}
+
+html[data-theme='light'] .chat-input:focus {
+  border-color: #818cf8;
+  --tw-ring-color: rgba(99, 102, 241, 0.5);
+}
+
+/* Sidebar logout button: light theme */
+html[data-theme='light'] .sidebar-logout-btn {
+  color: #111827;
+  border-color: #d1d5db;
+}
+
+html[data-theme='light'] .sidebar-logout-btn:hover {
+  border-color: rgba(248, 113, 113, 0.6);
+  background-color: rgba(248, 113, 113, 0.1);
+  color: #b91c1c;
 }

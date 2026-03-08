@@ -301,30 +301,30 @@ def delete_document_for_user(user_id: int, document_id: str) -> None:
 def generate_quick_summary(document_id: str) -> str:
     """
     Generate a very fast document summary using only the
-    beginning and end of the markdown file.
+    beginning and end of the markdown file. Returns a fallback message on any error.
     """
+    try:
+        doc_path = get_document_path(document_id)
+        if not doc_path.exists():
+            return "Document content not available."
 
-    doc_path = get_document_path(document_id)
+        md_files = list(doc_path.glob("*.md"))
+        if not md_files:
+            return "Document content not available."
 
-    md_files = list(doc_path.glob("*.md"))
-    if not md_files:
-        return "Document content not available."
+        md_path = md_files[0]
+        with open(md_path, "r", encoding="utf-8") as f:
+            text = f.read()
 
-    md_path = md_files[0]
+        if len(text) < 4000:
+            snippet = text
+        else:
+            start = text[:2000]
+            end = text[-2000:]
+            snippet = start + "\n...\n" + end
 
-    with open(md_path, "r", encoding="utf-8") as f:
-        text = f.read()
-
-    if len(text) < 4000:
-        snippet = text
-    else:
-        start = text[:2000]
-        end = text[-2000:]
-        snippet = start + "\n...\n" + end
-
-    llm = get_llm(temperature=0)
-
-    prompt = f"""
+        llm = get_llm(temperature=0)
+        prompt = f"""
 You are generating a high-level overview of a document.
 
 The text below contains only fragments from different parts of the document 
@@ -339,12 +339,14 @@ Your task is to just give a very highlevel summary of the document and not the s
 Text fragments:
 {snippet}
 """
-
-    response = llm.invoke(prompt)
-    # Some providers (e.g. OpenAI) return an object with a .content attribute,
-    # others (e.g. Ollama) may return a plain string. Handle both.
-    text = getattr(response, "content", None) or str(response)
-    return text.strip()
+        response = llm.invoke(prompt)
+        # Some providers (e.g. OpenAI) return an object with a .content attribute,
+        # others (e.g. Ollama) may return a plain string. Handle both.
+        out = getattr(response, "content", None) or str(response)
+        return (out or "").strip() or "This document is ready. You can ask questions below to explore it."
+    except Exception as e:
+        logger.warning("generate_quick_summary failed for %s: %s", document_id, e)
+        return "This document is ready. You can ask questions below to explore it."
 
 def load_agent_for_document(document_id: str) -> Dict[str, Any]:
     """Load agent resources for a document. Raises ValueError if not vectorized or files missing."""

@@ -97,6 +97,10 @@ export async function getDocument(documentId) {
   return request(`/documents/${documentId}`)
 }
 
+export async function getDocumentSummary(documentId) {
+  return request(`/documents/${documentId}/summary`)
+}
+
 export async function uploadPdf(file) {
   const form = new FormData()
   form.append('file', file)

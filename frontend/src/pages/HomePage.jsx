@@ -103,7 +103,7 @@ export default function HomePage() {
             </div>
           ) : (
             <div className="flex flex-col items-center justify-center gap-4 text-center">
-              <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-900 border border-slate-700 text-indigo-300">
+              <div className="upload-icon-box inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-900 border border-slate-700 text-indigo-300">
                 <svg
                   className="h-6 w-6"
                   viewBox="0 0 24 24"
