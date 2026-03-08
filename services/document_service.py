@@ -794,3 +794,180 @@ def get_document_markdown(document_id: str) -> str:
     if not md_path.exists():
         raise ValueError("Markdown file not found")
     return md_path.read_text(encoding="utf-8")
+
+
+def _distance_to_similarity(distance: float, scale_factor: float = 150.0) -> float:
+    """Convert L2 distance to similarity score [0, 1] for search results."""
+    return 1.0 / (1.0 + (distance / scale_factor))
+
+
+def search_document(document_id: str, query: str, limit: int = 15) -> List[Dict[str, Any]]:
+    """
+    Search a vectorized document by semantic similarity (retrieval only, no LLM).
+    Returns a list of chunk dicts with content, page_number, section_title, etc.
+    """
+    query = (query or "").strip()
+    if not query:
+        return []
+
+    agent_resources = load_agent_for_document(document_id)
+    vector_store = agent_resources["vector_store"]
+    document_graph = agent_resources["document_graph"]
+    chunks_list = agent_resources["chunks"]
+
+    # Vector search
+    seed_chunk_ids = []
+    seed_chunk_scores = {}
+    try:
+        vector_results = vector_store.similarity_search_with_score(query, k=20)
+        for doc, distance in vector_results:
+            chunk_id = doc.metadata.get("chunk_index")
+            if chunk_id is not None:
+                sim = _distance_to_similarity(distance)
+                seed_chunk_ids.append(chunk_id)
+                seed_chunk_scores[chunk_id] = sim
+    except Exception as e:
+        logger.warning("Search vector error for %s: %s", document_id, e)
+        return []
+
+    # Graph expansion from top seeds
+    top_seeds = seed_chunk_ids[:5]
+    expanded_ids = document_graph.expand_from_chunks(top_seeds, max_expansion=15) if top_seeds else []
+    all_chunk_ids = list(dict.fromkeys(seed_chunk_ids + expanded_ids))  # preserve order, no dupes
+
+    # Build chunk dict by id
+    chunk_by_id = {}
+    for ch in chunks_list:
+        cid = ch.metadata.get("chunk_index")
+        if cid is not None:
+            chunk_by_id[cid] = ch
+
+    out: List[Dict[str, Any]] = []
+    for cid in all_chunk_ids[:limit]:
+        ch = chunk_by_id.get(cid)
+        if not ch:
+            continue
+        raw_lines = ch.metadata.get("raw_content_lines")
+        content_for_api = raw_lines if isinstance(raw_lines, list) else ch.page_content
+        out.append({
+            "chunk_index": cid,
+            "content": content_for_api,
+            "heading": ch.metadata.get("heading", ""),
+            "section_path": ch.metadata.get("section_path", ""),
+            "section_title": ch.metadata.get("section_title", ""),
+            "page_number": ch.metadata.get("page_number"),
+            "summary": ch.metadata.get("summary", ""),
+            "similarity_score": seed_chunk_scores.get(cid),
+        })
+    return out
+
+
+def extract_information(document_id: str, extract_type: str = "key_facts") -> Dict[str, Any]:
+    """
+    Extract structured information from a document using the LLM.
+    extract_type: 'key_facts' | 'entities' | 'dates' | 'obligations'
+    Returns a dict with 'extract_type', 'items' (list), and optional 'summary'.
+    """
+    agent_resources = load_agent_for_document(document_id)
+    chunks_list = agent_resources["chunks"]
+    llm = get_llm(temperature=0)
+
+    # Build context from first 30 chunks (or all if fewer)
+    context_parts = []
+    for ch in chunks_list[:30]:
+        context_parts.append(ch.page_content[:800])
+    context = "\n\n---\n\n".join(context_parts)
+    if len(context) > 12000:
+        context = context[:12000] + "\n...[truncated]"
+
+    type_prompts = {
+        "key_facts": "List the key facts, main points, and important conclusions from the document. Return a JSON array of strings, one per fact.",
+        "entities": "List the main entities mentioned: people, organizations, products, places. Return a JSON array of strings.",
+        "dates": "List all explicit dates, deadlines, or time periods mentioned. Return a JSON array of strings.",
+        "obligations": "List obligations, requirements, or commitments stated in the document. Return a JSON array of strings.",
+    }
+    prompt_text = type_prompts.get(extract_type, type_prompts["key_facts"])
+
+    prompt = f"""Based on the following document excerpts, {prompt_text}
+
+Document excerpts:
+{context}
+
+Respond with only a valid JSON array of strings, no other text. Example: ["item1", "item2"]"""
+
+    try:
+        import re
+        response = llm.invoke(prompt)
+        text = getattr(response, "content", None) or str(response)
+        text = (text or "").strip()
+        # Try to parse JSON array
+        match = re.search(r"\[[\s\S]*\]", text)
+        if match:
+            items = json.loads(match.group())
+            if isinstance(items, list):
+                items = [str(x) for x in items if x]
+            else:
+                items = []
+        else:
+            items = [line.strip() for line in text.split("\n") if line.strip()][:50]
+        return {"extract_type": extract_type, "items": items}
+    except Exception as e:
+        logger.warning("extract_information failed for %s: %s", document_id, e)
+        return {"extract_type": extract_type, "items": [], "error": str(e)}
+
+
+def send_document_summary_email(document_id: str, to_email: str, subject: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Send the document summary to the given email address.
+    Uses SMTP if configured (SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, EMAIL_FROM);
+    otherwise logs and returns success for testing.
+    """
+    import os
+    to_email = (to_email or "").strip()
+    if not to_email or "@" not in to_email:
+        raise ValueError("Valid recipient email is required")
+
+    summary_text = ""
+    try:
+        doc_info = get_document_info(document_id)
+        if doc_info and (doc_info.get("doc_summary") or "").strip():
+            summary_text = doc_info["doc_summary"].strip()
+        else:
+            summary_text = generate_quick_summary(document_id)
+    except Exception as e:
+        logger.warning("Could not get summary for email: %s", e)
+        summary_text = "Summary not available."
+
+    doc_name = ""
+    info = get_document_info(document_id)
+    if info:
+        doc_name = info.get("name") or document_id
+
+    email_subject = subject or f"Document summary: {doc_name}"
+    body = f"Document: {doc_name}\n\nSummary:\n{summary_text}"
+
+    smtp_host = os.environ.get("SMTP_HOST")
+    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+    smtp_user = os.environ.get("SMTP_USER")
+    smtp_pass = os.environ.get("SMTP_PASSWORD")
+    email_from = os.environ.get("EMAIL_FROM") or smtp_user
+
+    if smtp_host and smtp_user and smtp_pass:
+        try:
+            import smtplib
+            from email.mime.text import MIMEText
+            msg = MIMEText(body, "plain", "utf-8")
+            msg["Subject"] = email_subject
+            msg["From"] = email_from
+            msg["To"] = to_email
+            with smtplib.SMTP(smtp_host, smtp_port) as server:
+                server.starttls()
+                server.login(smtp_user, smtp_pass)
+                server.sendmail(email_from, [to_email], msg.as_string())
+            return {"sent": True, "to": to_email, "message": "Email sent successfully."}
+        except Exception as e:
+            logger.exception("SMTP send failed")
+            raise ValueError(f"Failed to send email: {e}") from e
+    else:
+        logger.info("Email (no SMTP): would send to %s subject %s. Configure SMTP_* and EMAIL_FROM to send.", to_email, email_subject)
+        return {"sent": True, "to": to_email, "message": "Summary prepared; email not sent (SMTP not configured)."}

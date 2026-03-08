@@ -229,6 +229,49 @@ class ErrorResponse(BaseModel):
     detail: Optional[str] = None
 
 
+class SearchRequest(BaseModel):
+    """Search within a document (retrieval only)"""
+    query: str = Field(..., min_length=1)
+    limit: int = Field(default=15, ge=1, le=50)
+
+
+class SearchChunkItem(BaseModel):
+    """Single search result chunk"""
+    chunk_index: int
+    content: Any
+    heading: str
+    section_path: str
+    section_title: str
+    page_number: Optional[int]
+    summary: str
+    similarity_score: Optional[float]
+
+
+class SearchResponse(BaseModel):
+    """Search results"""
+    document_id: str
+    query: str
+    chunks: List[SearchChunkItem]
+
+
+class ExtractRequest(BaseModel):
+    """Extract information from document"""
+    extract_type: str = Field(default="key_facts", description="key_facts | entities | dates | obligations")
+
+
+class ExtractResponse(BaseModel):
+    """Extracted information"""
+    extract_type: str
+    items: List[str]
+    error: Optional[str] = None
+
+
+class EmailRequest(BaseModel):
+    """Email document summary"""
+    to_email: str = Field(..., description="Recipient email address")
+    subject: Optional[str] = None
+
+
 # ---------------- LIFECYCLE MANAGEMENT ----------------
 
 
@@ -429,6 +472,9 @@ async def root():
             "upload": "/upload",
             "vectorize": "/vectorize/{document_id}",
             "query": "/query",
+            "search": "/documents/{document_id}/search",
+            "extract": "/documents/{document_id}/extract",
+            "email": "/documents/{document_id}/email",
             "visualize": "/visualize/{document_id}",
             "page_summarize": "/page/{document_id}/summarize",
             "economics_summary": "/economics/summary",
@@ -1176,6 +1222,61 @@ async def summarize_page(
         chunks_used=result["chunks_used"],
         total_chunks=result["total_chunks"],
     )
+
+
+@app.post("/documents/{document_id}/search", response_model=SearchResponse, tags=["Documents"])
+async def search_in_document(
+    document_id: str = PathParam(..., description="Document ID"),
+    body: SearchRequest = ...,
+    current_user=Depends(get_current_user),
+):
+    """Search within a document (semantic retrieval, no LLM). Returns matching chunks."""
+    try:
+        document_service.ensure_document_belongs_to_user(document_id, current_user.id)
+        chunks = document_service.search_document(document_id, body.query, limit=body.limit)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return SearchResponse(
+        document_id=document_id,
+        query=body.query,
+        chunks=[SearchChunkItem(**c) for c in chunks],
+    )
+
+
+@app.post("/documents/{document_id}/extract", response_model=ExtractResponse, tags=["Documents"])
+async def extract_from_document(
+    document_id: str = PathParam(..., description="Document ID"),
+    body: ExtractRequest = ...,
+    current_user=Depends(get_current_user),
+):
+    """Extract key facts, entities, dates, or obligations from the document."""
+    try:
+        document_service.ensure_document_belongs_to_user(document_id, current_user.id)
+        result = document_service.extract_information(document_id, body.extract_type)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return ExtractResponse(
+        extract_type=result["extract_type"],
+        items=result.get("items", []),
+        error=result.get("error"),
+    )
+
+
+@app.post("/documents/{document_id}/email", tags=["Documents"])
+async def email_document_summary(
+    document_id: str = PathParam(..., description="Document ID"),
+    body: EmailRequest = ...,
+    current_user=Depends(get_current_user),
+):
+    """Send the document summary to an email address. Configure SMTP_* env vars to actually send."""
+    try:
+        document_service.ensure_document_belongs_to_user(document_id, current_user.id)
+        result = document_service.send_document_summary_email(
+            document_id, body.to_email, subject=body.subject
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return result
 
 
 # ---------------- ERROR HANDLERS ----------------

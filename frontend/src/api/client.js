@@ -239,3 +239,27 @@ export async function deleteDocument(documentId) {
     method: 'DELETE',
   })
 }
+
+export async function searchDocument(documentId, query, limit = 15) {
+  return request(`/documents/${documentId}/search`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: query.trim(), limit }),
+  })
+}
+
+export async function extractFromDocument(documentId, extractType = 'key_facts') {
+  return request(`/documents/${documentId}/extract`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ extract_type: extractType }),
+  })
+}
+
+export async function emailDocumentSummary(documentId, toEmail, subject = null) {
+  return request(`/documents/${documentId}/email`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ to_email: toEmail, subject: subject || undefined }),
+  })
+}

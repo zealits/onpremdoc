@@ -15,6 +15,9 @@ import {
   createChatSession,
   getSessionMessages,
   deleteDocument as deleteDocumentApi,
+  searchDocument,
+  extractFromDocument,
+  emailDocumentSummary,
 } from './client'
 
 export const documentKeys = {
@@ -126,5 +129,23 @@ export function useDeleteDocument(documentId) {
       qc.invalidateQueries({ queryKey: documentKeys.list() })
       qc.removeQueries({ queryKey: documentKeys.detail(documentId) })
     },
+  })
+}
+
+export function useSearchDocument(documentId) {
+  return useMutation({
+    mutationFn: ({ query, limit }) => searchDocument(documentId, query, limit),
+  })
+}
+
+export function useExtractFromDocument(documentId) {
+  return useMutation({
+    mutationFn: (extractType) => extractFromDocument(documentId, extractType),
+  })
+}
+
+export function useEmailDocumentSummary(documentId) {
+  return useMutation({
+    mutationFn: ({ toEmail, subject }) => emailDocumentSummary(documentId, toEmail, subject),
   })
 }

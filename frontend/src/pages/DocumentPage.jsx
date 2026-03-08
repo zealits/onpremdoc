@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useDocument, useDocumentSummary, useVectorize, useDeleteDocument } from '../api/hooks'
 import MarkdownViewer from '../components/MarkdownViewer'
 import ChatPanel from '../components/ChatPanel'
+import DocumentToolbar from '../components/DocumentToolbar'
 
 function getDocumentDisplayName(doc, documentId) {
   if (!doc) return documentId || ''
@@ -125,6 +126,18 @@ export default function DocumentPage() {
           </button>
         </div>
       </header>
+      <DocumentToolbar
+        documentId={documentId}
+        documentReady={ready}
+        documentName={getDocumentDisplayName(doc, documentId)}
+        summaryText={displaySummary}
+        isSummaryLoading={showSummaryLoading}
+        onHighlightChunk={(chunk) => {
+          setActiveHighlight(chunk)
+          setIsMarkdownOpen(true)
+        }}
+        onOpenDocument={() => setIsMarkdownOpen(true)}
+      />
       <div className="flex-1 flex min-h-0 overflow-hidden">
         <div
           className={`relative min-w-0 min-h-0 flex flex-col overflow-hidden transition-all duration-300 ease-out ${
