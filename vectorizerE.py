@@ -1709,7 +1709,16 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
             
             if not chunk_doc or not chunk_doc.page_content.strip():
                 continue
-            
+
+            # Account for embedding tokens used by similarity search queries.
+            # Chroma will embed the query text once per search, so we approximate
+            # cost here for economics tracking.
+            try:
+                query_tokens = token_tracker.count_tokens(chunk_doc.page_content)
+                token_tracker.stats["embedding_tokens"] += query_tokens
+            except Exception:
+                pass
+
             # Find similar chunks using vector similarity search
             # Search for more than we need to account for the chunk itself
             similar_results = vector_store.similarity_search_with_score(

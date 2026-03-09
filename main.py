@@ -39,7 +39,12 @@ from visualizeGraphE import (
     visualize_simplified,
     find_graph_file as find_viz_graph_file,
 )
-from economics_tracker import log_upload, get_usage_summary
+from economics_tracker import (
+    log_upload,
+    get_usage_summary,
+    get_latest_vectorization_for_document,
+    get_document_pipeline_economics,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -229,47 +234,24 @@ class ErrorResponse(BaseModel):
     detail: Optional[str] = None
 
 
-class SearchRequest(BaseModel):
-    """Search within a document (retrieval only)"""
-    query: str = Field(..., min_length=1)
-    limit: int = Field(default=15, ge=1, le=50)
-
-
-class SearchChunkItem(BaseModel):
-    """Single search result chunk"""
-    chunk_index: int
-    content: Any
-    heading: str
-    section_path: str
-    section_title: str
-    page_number: Optional[int]
-    summary: str
-    similarity_score: Optional[float]
-
-
-class SearchResponse(BaseModel):
-    """Search results"""
+class VectorizationEconomicsResponse(BaseModel):
+    """Vectorization economics for a single document (for frontend UI)"""
     document_id: str
-    query: str
-    chunks: List[SearchChunkItem]
+    date: str
+    total_pages: Optional[int] = None
+    total_words: Optional[int] = None
+    total_tokens: Optional[int] = None
+    duration_seconds: Optional[float] = None
+    cost_estimate_usd: Optional[float] = None
+    cost_display: Optional[str] = None
+    pricing: Dict[str, Any] = Field(default_factory=dict)
 
 
-class ExtractRequest(BaseModel):
-    """Extract information from document"""
-    extract_type: str = Field(default="key_facts", description="key_facts | entities | dates | obligations")
-
-
-class ExtractResponse(BaseModel):
-    """Extracted information"""
-    extract_type: str
-    items: List[str]
-    error: Optional[str] = None
-
-
-class EmailRequest(BaseModel):
-    """Email document summary"""
-    to_email: str = Field(..., description="Recipient email address")
-    subject: Optional[str] = None
+class PipelineEconomicsResponse(BaseModel):
+    """Combined upload + processing + vectorization economics for one document"""
+    document_id: str
+    events: List[Dict[str, Any]]
+    totals: Dict[str, Any]
 
 
 # ---------------- LIFECYCLE MANAGEMENT ----------------
@@ -425,38 +407,6 @@ def _extract_stream_delta(chunk: Any) -> str:
     return ""
 
 
-def _user_facing_error_message(exc: Exception) -> str:
-    """
-    Extract a short, user-facing message from an exception (e.g. OpenAI 402 credits error).
-    """
-    # OpenAI-style API error: body may be a dict with 'error' key
-    body = getattr(exc, "body", None)
-    if isinstance(body, dict) and isinstance(body.get("error"), str):
-        return body["error"].strip()
-    # Response body (e.g. from HTTP client)
-    try:
-        resp = getattr(exc, "response", None)
-        if resp is not None and hasattr(resp, "json"):
-            data = resp.json()
-            if isinstance(data, dict) and isinstance(data.get("error"), str):
-                return data["error"].strip()
-    except Exception:
-        pass
-    msg = str(exc).strip()
-    # Extract from "Error code: XXX - {'error': '...'}" style messages
-    if "'error':" in msg or '"error":' in msg:
-        match = re.search(r"['\"]error['\"]\s*:\s*['\"]([^'\"]+)['\"]", msg)
-        if match:
-            return match.group(1).strip()
-    if msg.startswith("Error code:"):
-        idx = msg.find(" - ")
-        if idx != -1:
-            msg = msg[idx + 3 :].strip()
-    if len(msg) > 600:
-        msg = msg[:597] + "..."
-    return msg or "An error occurred while generating the answer."
-
-
 # ---------------- API ENDPOINTS ----------------
 
 
@@ -472,9 +422,6 @@ async def root():
             "upload": "/upload",
             "vectorize": "/vectorize/{document_id}",
             "query": "/query",
-            "search": "/documents/{document_id}/search",
-            "extract": "/documents/{document_id}/extract",
-            "email": "/documents/{document_id}/email",
             "visualize": "/visualize/{document_id}",
             "page_summarize": "/page/{document_id}/summarize",
             "economics_summary": "/economics/summary",
@@ -535,49 +482,6 @@ async def get_markdown(
         raise HTTPException(status_code=404, detail=str(e))
     from fastapi.responses import Response
     return Response(content=content, media_type="text/plain")
-
-
-class DocumentSummaryResponse(BaseModel):
-    """Document summary for display when overview is missing."""
-    summary: str
-    suggested_queries: Optional[List[str]] = None
-
-
-@app.get("/documents/{document_id}/summary", response_model=DocumentSummaryResponse, tags=["Documents"])
-async def get_document_summary(
-    document_id: str = PathParam(..., description="Document ID"),
-    current_user=Depends(get_current_user),
-):
-    """Get document summary. Returns stored overview if present, otherwise generates a quick summary. Always returns 200 with a message."""
-    fallback = "This document is ready. You can ask questions below to explore it."
-    try:
-        try:
-            document_service.ensure_document_belongs_to_user(document_id, current_user.id)
-        except ValueError:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Document {document_id} not found",
-            )
-        doc_info = get_document_info(document_id)
-        if not doc_info:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Document {document_id} not found",
-            )
-        if (doc_info.doc_summary or "").strip():
-            return DocumentSummaryResponse(
-                summary=doc_info.doc_summary.strip(),
-                suggested_queries=doc_info.suggested_queries,
-            )
-        summary = document_service.generate_quick_summary(document_id)
-        if summary and summary.strip():
-            return DocumentSummaryResponse(summary=summary.strip(), suggested_queries=None)
-        return DocumentSummaryResponse(summary=fallback, suggested_queries=None)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.warning(f"Document summary failed for {document_id}: {e}", exc_info=True)
-        return DocumentSummaryResponse(summary=fallback, suggested_queries=None)
 
 
 @app.get("/documents/{document_id}/confidence", response_model=ConfidenceResponse, tags=["Documents"])
@@ -805,6 +709,98 @@ async def economics_summary(date: Optional[str] = Query(None, description="Date 
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get(
+    "/economics/pipeline/{document_id}",
+    response_model=PipelineEconomicsResponse,
+    tags=["Economics"],
+)
+async def economics_pipeline(
+    document_id: str = PathParam(..., description="Document ID"),
+    current_user=Depends(get_current_user),
+):
+    """
+    Combined economics for upload + PDF processing + vectorization for one document.
+
+    This is what the frontend should call when it only knows the document_id.
+    Retrieval/query economics are deliberately excluded.
+    """
+    try:
+        document_service.ensure_document_belongs_to_user(document_id, current_user.id)
+    except ValueError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Document {document_id} not found",
+        )
+
+    try:
+        data = get_document_pipeline_economics(document_id)
+    except Exception as e:
+        logger.error(f"Pipeline economics error for {document_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if not data.get("events"):
+        raise HTTPException(
+            status_code=404,
+            detail=f"No pipeline economics found for document {document_id}",
+        )
+
+    return PipelineEconomicsResponse(**data)
+
+
+@app.get(
+    "/economics/vectorization/{document_id}",
+    response_model=VectorizationEconomicsResponse,
+    tags=["Economics"],
+)
+async def economics_vectorization(
+    document_id: str = PathParam(..., description="Document ID"),
+    current_user=Depends(get_current_user),
+):
+    """
+    Return vectorization-level economics for a specific document.
+
+    Data source: economics/usage_*.jsonl, filtered by:
+    - phase == "vectorization"
+    - document_id == <document_id>
+    The most recent matching record is returned.
+    """
+    # Ensure user actually owns this document
+    try:
+        document_service.ensure_document_belongs_to_user(document_id, current_user.id)
+    except ValueError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Document {document_id} not found",
+        )
+
+    try:
+        rec = get_latest_vectorization_for_document(document_id)
+    except Exception as e:
+        logger.error(f"Vectorization economics error for {document_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if not rec:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No vectorization economics found for document {document_id}",
+        )
+
+    extra = rec.get("extra") or {}
+    pricing = rec.get("pricing") or {}
+
+    return VectorizationEconomicsResponse(
+        document_id=document_id,
+        date=datetime.utcnow().strftime("%Y-%m-%d"),
+        total_pages=extra.get("total_pages"),
+        total_words=extra.get("total_words"),
+        total_tokens=extra.get("total_tokens"),
+        duration_seconds=extra.get("duration_seconds"),
+        cost_estimate_usd=rec.get("cost_estimate_usd"),
+        cost_display=pricing.get("cost_display"),
+        pricing=pricing,
+    )
+
+
 # Number of past messages to send as conversation context to the LLM
 PAST_N_MESSAGES = 6
 # Max chunks per assistant message to include (only those cited in the answer)
@@ -856,6 +852,53 @@ def _build_past_messages(
             entry["chunks"] = []
         out.append(entry)
     return out
+
+
+def _generate_next_questions(llm: Any, query: str, answer: str) -> List[str]:
+    """Generate 3–7 suggested follow-up questions from the user query and the generated answer."""
+    if not (query and answer):
+        return []
+    followup_prompt = f"""You are helping a user explore a long insurance policy document.
+
+Original user question:
+{query}
+
+Your answer:
+{answer}
+
+Now propose 3–7 SHORT, concrete follow-up questions that the user might naturally ask next
+to go deeper or clarify details. Focus on practical, answerable questions about this document.
+
+Reply in the following format ONLY:
+- question 1
+- question 2
+- question 3
+..."""
+    try:
+        response = llm.invoke(followup_prompt)
+        text = (getattr(response, "content", None) or str(response)).strip()
+    except Exception:
+        return []
+    suggestions: List[str] = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if line[0] in "-*":
+            q = line[1:].strip()
+        else:
+            q = re.sub(r"^\d+[\.\)]\s*", "", line).strip()
+        if q:
+            suggestions.append(q)
+    seen = set()
+    deduped = []
+    for q in suggestions:
+        k = q.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        deduped.append(q)
+    return deduped[:7]
 
 
 def _ensure_session_for_request(
@@ -955,6 +998,7 @@ async def query_document(
             "document_id": result["document_id"],
             "query": result["query"],
             "retrieval_stats": result["retrieval_stats"],
+            "economics": result.get("economics") or {},
             "chunks": result.get("chunks") or [],
             "chunk_analysis": result.get("chunk_analysis"),
             "debug_info": result.get("debug_info") or {},
@@ -967,6 +1011,7 @@ async def query_document(
 
         streamed_any = False
         full_answer_parts: List[str] = []
+        llm = None
         try:
             # True streaming or single response: when we have answer_prompt (normal Q&A or page-summary).
             if answer_prompt:
@@ -1049,9 +1094,8 @@ async def query_document(
                 ) + "\n"
         except Exception as e:
             logger.error(f"Error during LLM streaming: {e}", exc_info=True)
-            user_message = _user_facing_error_message(e)
             yield json.dumps(
-                {"type": "error", "message": user_message},
+                {"type": "error", "message": "Streaming failed while generating the answer."},
                 ensure_ascii=False,
             ) + "\n"
 
@@ -1073,13 +1117,21 @@ async def query_document(
         else:
             # Persist the full assistant message with metadata
             full_answer = "".join(full_answer_parts)
+            # Generate suggested follow-up questions (streaming path: agent skips this, so we do it here)
+            next_questions_list = result.get("next_questions") or []
+            if full_answer and not next_questions_list and llm is not None:
+                next_questions_list = _generate_next_questions(llm, request.query, full_answer)
+            yield json.dumps(
+                {"type": "next_questions", "next_questions": next_questions_list},
+                ensure_ascii=False,
+            ) + "\n"
             assistant_metadata = {
                 "retrieval_stats": result.get("retrieval_stats"),
                 "chunks": result.get("chunks"),
-                "next_questions": result.get("next_questions"),
-                "is_page_summary": is_page_summary,
-                "page_number": result.get("page_number"),
+                "next_questions": next_questions_list,
             }
+            assistant_metadata["is_page_summary"] = is_page_summary
+            assistant_metadata["page_number"] = result.get("page_number")
             assistant_msg = ChatMessage(
                 session_id=session_id,
                 role="assistant",
@@ -1222,61 +1274,6 @@ async def summarize_page(
         chunks_used=result["chunks_used"],
         total_chunks=result["total_chunks"],
     )
-
-
-@app.post("/documents/{document_id}/search", response_model=SearchResponse, tags=["Documents"])
-async def search_in_document(
-    document_id: str = PathParam(..., description="Document ID"),
-    body: SearchRequest = ...,
-    current_user=Depends(get_current_user),
-):
-    """Search within a document (semantic retrieval, no LLM). Returns matching chunks."""
-    try:
-        document_service.ensure_document_belongs_to_user(document_id, current_user.id)
-        chunks = document_service.search_document(document_id, body.query, limit=body.limit)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    return SearchResponse(
-        document_id=document_id,
-        query=body.query,
-        chunks=[SearchChunkItem(**c) for c in chunks],
-    )
-
-
-@app.post("/documents/{document_id}/extract", response_model=ExtractResponse, tags=["Documents"])
-async def extract_from_document(
-    document_id: str = PathParam(..., description="Document ID"),
-    body: ExtractRequest = ...,
-    current_user=Depends(get_current_user),
-):
-    """Extract key facts, entities, dates, or obligations from the document."""
-    try:
-        document_service.ensure_document_belongs_to_user(document_id, current_user.id)
-        result = document_service.extract_information(document_id, body.extract_type)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    return ExtractResponse(
-        extract_type=result["extract_type"],
-        items=result.get("items", []),
-        error=result.get("error"),
-    )
-
-
-@app.post("/documents/{document_id}/email", tags=["Documents"])
-async def email_document_summary(
-    document_id: str = PathParam(..., description="Document ID"),
-    body: EmailRequest = ...,
-    current_user=Depends(get_current_user),
-):
-    """Send the document summary to an email address. Configure SMTP_* env vars to actually send."""
-    try:
-        document_service.ensure_document_belongs_to_user(document_id, current_user.id)
-        result = document_service.send_document_summary_email(
-            document_id, body.to_email, subject=body.subject
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return result
 
 
 # ---------------- ERROR HANDLERS ----------------

@@ -8,13 +8,14 @@ map them to HTTP responses or MCP tool error messages.
 import json
 import logging
 import shutil
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 import networkx as nx
 
-from config.inference_config import get_llm
+from config.inference_config import get_llm, get_embedding_model_id, get_llm_model_id
 from detection import process_single_pdf
 from economics_tracker import (
     log_pdf_processing,
@@ -22,6 +23,7 @@ from economics_tracker import (
     log_upload,
     log_vectorization,
     log_page_summary,
+    estimate_cost_for_usage,
 )
 from page_summarization import load_page_agent
 from retrivalAgentE import (
@@ -301,30 +303,30 @@ def delete_document_for_user(user_id: int, document_id: str) -> None:
 def generate_quick_summary(document_id: str) -> str:
     """
     Generate a very fast document summary using only the
-    beginning and end of the markdown file. Returns a fallback message on any error.
+    beginning and end of the markdown file.
     """
-    try:
-        doc_path = get_document_path(document_id)
-        if not doc_path.exists():
-            return "Document content not available."
 
-        md_files = list(doc_path.glob("*.md"))
-        if not md_files:
-            return "Document content not available."
+    doc_path = get_document_path(document_id)
 
-        md_path = md_files[0]
-        with open(md_path, "r", encoding="utf-8") as f:
-            text = f.read()
+    md_files = list(doc_path.glob("*.md"))
+    if not md_files:
+        return "Document content not available."
 
-        if len(text) < 4000:
-            snippet = text
-        else:
-            start = text[:2000]
-            end = text[-2000:]
-            snippet = start + "\n...\n" + end
+    md_path = md_files[0]
 
-        llm = get_llm(temperature=0)
-        prompt = f"""
+    with open(md_path, "r", encoding="utf-8") as f:
+        text = f.read()
+
+    if len(text) < 4000:
+        snippet = text
+    else:
+        start = text[:2000]
+        end = text[-2000:]
+        snippet = start + "\n...\n" + end
+
+    llm = get_llm(temperature=0)
+
+    prompt = f"""
 You are generating a high-level overview of a document.
 
 The text below contains only fragments from different parts of the document 
@@ -339,14 +341,12 @@ Your task is to just give a very highlevel summary of the document and not the s
 Text fragments:
 {snippet}
 """
-        response = llm.invoke(prompt)
-        # Some providers (e.g. OpenAI) return an object with a .content attribute,
-        # others (e.g. Ollama) may return a plain string. Handle both.
-        out = getattr(response, "content", None) or str(response)
-        return (out or "").strip() or "This document is ready. You can ask questions below to explore it."
-    except Exception as e:
-        logger.warning("generate_quick_summary failed for %s: %s", document_id, e)
-        return "This document is ready. You can ask questions below to explore it."
+
+    response = llm.invoke(prompt)
+    # Some providers (e.g. OpenAI) return an object with a .content attribute,
+    # others (e.g. Ollama) may return a plain string. Handle both.
+    text = getattr(response, "content", None) or str(response)
+    return text.strip()
 
 def load_agent_for_document(document_id: str) -> Dict[str, Any]:
     """Load agent resources for a document. Raises ValueError if not vectorized or files missing."""
@@ -480,17 +480,49 @@ def trigger_vectorize(document_id: str) -> None:
         "token_usage": None,
     }
     workflow = create_vectorization_workflow()
+    start_time = time.perf_counter()
     final_state = workflow.invoke(initial_state)
+    duration = time.perf_counter() - start_time
 
-    usage = final_state.get("token_usage")
-    if usage:
-        log_vectorization(
-            document_id,
-            embedding_tokens=usage.get("embedding_tokens", 0),
-            llm_tokens=usage.get("llm_tokens", 0),
-            total_chunks=usage.get("total_chunks", 0),
-            truncated_chunks=usage.get("truncated_chunks", 0),
-        )
+    usage = final_state.get("token_usage") or {}
+    embedding_tokens = int(usage.get("embedding_tokens", 0) or 0)
+    llm_tokens = int(usage.get("llm_tokens", 0) or 0)
+    total_chunks = int(usage.get("total_chunks", 0) or 0)
+    truncated_chunks = int(usage.get("truncated_chunks", 0) or 0)
+    total_tokens = embedding_tokens + llm_tokens
+
+    total_pages = None
+    total_words = None
+    md_files = list(doc_path.glob("*.md"))
+    if md_files:
+        md_path = md_files[0]
+        try:
+            text = md_path.read_text(encoding="utf-8")
+            total_words = len(text.split())
+        except Exception:
+            total_words = None
+
+        pm_path = doc_path / f"{md_path.stem}_page_mapping.json"
+        if pm_path.exists():
+            try:
+                with open(pm_path, "r", encoding="utf-8") as f:
+                    total_pages = json.load(f).get("total_pages")
+            except Exception:
+                total_pages = None
+
+    log_vectorization(
+        document_id,
+        embedding_tokens=embedding_tokens,
+        llm_tokens=llm_tokens,
+        total_chunks=total_chunks,
+        truncated_chunks=truncated_chunks,
+        model_embed=get_embedding_model_id(),
+        model_llm=get_llm_model_id(),
+        total_pages=total_pages,
+        total_words=total_words,
+        total_tokens=total_tokens,
+        duration_seconds=duration,
+    )
     logger.info("Vectorization complete for document: %s", document_id)
 
 
@@ -543,8 +575,17 @@ def query_document(
     }
 
     final_state = agent.invoke(initial_state)
-    if final_state.get("token_usage"):
-        log_query_usage(document_id, final_state["token_usage"])
+
+    # Per-query economics (tokens + cost) for API and logging
+    steps_usage = final_state.get("token_usage") or []
+    if steps_usage:
+        log_query_usage(document_id, steps_usage)
+
+    q_total_in = sum(int(s.get("input_tokens", 0) or 0) for s in steps_usage)
+    q_total_out = sum(int(s.get("output_tokens", 0) or 0) for s in steps_usage)
+    q_total_emb = sum(int(s.get("embedding_tokens", 0) or 0) for s in steps_usage)
+    q_total_tokens = q_total_in + q_total_out + q_total_emb
+    q_pricing = estimate_cost_for_usage(q_total_in, q_total_out, q_total_emb)
 
     seed_chunk_ids = set(final_state.get("seed_chunk_ids", []))
     graph_expanded_ids = set(final_state.get("graph_expanded_ids", []))
@@ -670,6 +711,15 @@ def query_document(
             "min_score": min(rerank_scores.values()),
         }
 
+    economics: Dict[str, Any] = {
+        "steps": steps_usage,
+        "total_input_tokens": q_total_in,
+        "total_output_tokens": q_total_out,
+        "total_embedding_tokens": q_total_emb,
+        "total_tokens": q_total_tokens,
+        "pricing": q_pricing,
+    }
+
     out: Dict[str, Any] = {
         "answer": final_state.get("final_answer", "No answer generated"),
         "document_id": document_id,
@@ -678,6 +728,7 @@ def query_document(
         "chunk_analysis": final_state.get("chunk_analysis"),
         "chunks": chunks_out,
         "debug_info": debug_info,
+        "economics": economics,
         "is_page_summary": final_state.get("is_page_summary", False),
         "is_use_history": final_state.get("is_use_history", False),
         "page_number": final_state.get("page_number"),

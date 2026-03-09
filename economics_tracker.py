@@ -10,17 +10,34 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+try:
+    from config.inference_config import (
+        get_provider_name,
+        get_embedding_model_id,
+        get_llm_model_id,
+    )
+except Exception:  # best-effort import
+    def get_provider_name() -> str:  # type: ignore[no-redef]
+        return "ollama"
+
+    def get_embedding_model_id() -> str:  # type: ignore[no-redef]
+        return ""
+
+    def get_llm_model_id() -> str:  # type: ignore[no-redef]
+        return ""
+
 
 def _model_label(model: str) -> str:
     """Default model label from inference provider when not specified."""
     if model:
         return model
     try:
-        from config.inference_config import get_provider_name
         return get_provider_name()
     except Exception:
         return "ollama"
+
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +49,87 @@ DEFAULT_OUTPUT_COST_PER_1K = 0.0
 DEFAULT_EMBEDDING_COST_PER_1K = 0.0
 # Chars per token for estimation when API doesn't return usage (~4 for English)
 CHARS_PER_TOKEN_ESTIMATE = 4
+
+
+def _active_models() -> Tuple[str, str, str]:
+    """Return (provider, embedding_model, llm_model) from inference_config."""
+    try:
+        provider = get_provider_name()
+        embed = get_embedding_model_id()
+        llm = get_llm_model_id()
+    except Exception:
+        provider, embed, llm = "ollama", "", ""
+    return provider, embed, llm
+
+
+def estimate_cost_for_usage(
+    input_tokens: int,
+    output_tokens: int,
+    embedding_tokens: int,
+) -> Dict[str, Any]:
+    """
+    Estimate USD cost for a given token usage snapshot.
+
+    Rules based on current project configuration:
+    - Ollama + nomic-embed-text:v1.5 + llama3.1:8b => local => cost_display = "N.A"
+    - OpenAI text-embedding-3-large: $0.13 per 1M tokens (embeddings)
+    - OpenAI gpt-4o-mini: input $0.15, output $0.60 per 1M tokens
+    - Other providers/models: cost_display = "N.A"
+    """
+    provider, embed_model, llm_model = _active_models()
+
+    cost = 0.0
+    components: Dict[str, float] = {}
+
+    # Local Ollama – not billed
+    if provider == "ollama":
+        return {
+            "provider": provider,
+            "embedding_model": embed_model,
+            "llm_model": llm_model,
+            "cost_estimate_usd": None,
+            "cost_display": "N.A",
+            "components": {},
+        }
+
+    # OpenAI pricing for specific models
+    if provider == "openai":
+        # Embeddings: text-embedding-3-large
+        if "text-embedding-3-large" in (embed_model or ""):
+            emb_price_per_tok = 0.13 / 1_000_000.0
+            emb_cost = embedding_tokens * emb_price_per_tok
+            components["embeddings_usd"] = emb_cost
+            cost += emb_cost
+
+        # LLM: gpt-4o-mini
+        if "gpt-4o-mini" in (llm_model or ""):
+            in_price_per_tok = 0.15 / 1_000_000.0
+            out_price_per_tok = 0.60 / 1_000_000.0
+            in_cost = input_tokens * in_price_per_tok
+            out_cost = output_tokens * out_price_per_tok
+            components["llm_input_usd"] = in_cost
+            components["llm_output_usd"] = out_cost
+            cost += in_cost + out_cost
+
+    # HuggingFace or unsupported OpenAI models → treat as N.A.
+    if not components:
+        return {
+            "provider": provider,
+            "embedding_model": embed_model,
+            "llm_model": llm_model,
+            "cost_estimate_usd": None,
+            "cost_display": "N.A",
+            "components": {},
+        }
+
+    return {
+        "provider": provider,
+        "embedding_model": embed_model,
+        "llm_model": llm_model,
+        "cost_estimate_usd": round(cost, 8),
+        "cost_display": f"{cost:.6f}",
+        "components": components,
+    }
 
 
 def _ensure_economics_dir() -> Path:
@@ -87,8 +185,12 @@ def log_step(
         "embedding_tokens": embedding_tokens,
         "total_tokens": input_tokens + output_tokens + embedding_tokens,
         "model": _model_label(model),
-        "cost_estimate_usd": 0.0,  # Override if you add pricing
+        "cost_estimate_usd": None,
     }
+    # Attach pricing based on active provider/models
+    pricing = estimate_cost_for_usage(input_tokens, output_tokens, embedding_tokens)
+    record["cost_estimate_usd"] = pricing.get("cost_estimate_usd")
+    record["pricing"] = pricing
     if extra:
         record["extra"] = extra
 
@@ -130,8 +232,25 @@ def log_vectorization(
     truncated_chunks: int = 0,
     model_embed: str = "nomic-embed-text",
     model_llm: str = "llama3.1:8b",
+    total_pages: Optional[int] = None,
+    total_words: Optional[int] = None,
+    total_tokens: Optional[int] = None,
+    duration_seconds: Optional[float] = None,
 ) -> Path:
     """Log vectorization step (chunk summaries + embeddings)."""
+    extra: Dict[str, Any] = {
+        "total_chunks": total_chunks,
+        "truncated_chunks": truncated_chunks,
+    }
+    if total_pages is not None:
+        extra["total_pages"] = total_pages
+    if total_words is not None:
+        extra["total_words"] = total_words
+    if total_tokens is not None:
+        extra["total_tokens"] = total_tokens
+    if duration_seconds is not None:
+        extra["duration_seconds"] = duration_seconds
+
     return log_step(
         step_name="vectorization",
         phase="vectorization",
@@ -140,10 +259,7 @@ def log_vectorization(
         output_tokens=0,          # Could split if we had output count
         embedding_tokens=embedding_tokens,
         model=f"{model_embed}+{model_llm}",
-        extra={
-            "total_chunks": total_chunks,
-            "truncated_chunks": truncated_chunks,
-        },
+        extra=extra,
     )
 
 
@@ -196,6 +312,13 @@ def log_query_usage(
             "total_tokens": s.get("input_tokens", 0) + s.get("output_tokens", 0) + s.get("embedding_tokens", 0),
             "model": _model_label(""),
         }
+        pricing = estimate_cost_for_usage(
+            record["input_tokens"],
+            record["output_tokens"],
+            record["embedding_tokens"],
+        )
+        record["cost_estimate_usd"] = pricing.get("cost_estimate_usd")
+        record["pricing"] = pricing
         if s.get("extra"):
             record["extra"] = s["extra"]
         with open(jsonl_path, "a", encoding="utf-8") as f:
@@ -214,6 +337,9 @@ def log_query_usage(
         "model": _model_label(""),
         "extra": {"sub_steps": len(steps)},
     }
+    summary_pricing = estimate_cost_for_usage(total_in, total_out, total_emb)
+    summary_record["cost_estimate_usd"] = summary_pricing.get("cost_estimate_usd")
+    summary_record["pricing"] = summary_pricing
     with open(jsonl_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(summary_record, ensure_ascii=False) + "\n")
 
@@ -302,4 +428,121 @@ def get_usage_summary(date_str: Optional[str] = None) -> Dict[str, Any]:
         "by_phase": by_phase,
         "by_step": by_step,
         "events": events,
+    }
+
+
+def get_latest_vectorization_for_document(
+    document_id: str,
+    date_str: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Return the most recent vectorization economics record for a specific document_id
+    from economics/usage_<date>.jsonl.
+
+    This is used by the API so the frontend can fetch vectorization stats for
+    exactly one document, even when multiple documents exist for the same day.
+    """
+    # Kept for backwards compatibility; now implemented via get_document_pipeline_economics.
+    data = get_document_pipeline_economics(document_id)
+    # Find the last vectorization event for this document, if any.
+    vector_events = [e for e in data.get("events", []) if e.get("step") == "vectorization"]
+    return vector_events[-1] if vector_events else None
+
+
+def get_document_pipeline_economics(document_id: str) -> Dict[str, Any]:
+    """
+    Aggregate pipeline economics for a single document across ALL days.
+
+    Includes only:
+    - pdf_upload
+    - pdf_processing
+    - vectorization
+    and ignores retrieval / query steps entirely.
+    """
+    root = _ensure_economics_dir()
+    if not root.exists():
+        return {
+            "document_id": document_id,
+            "events": [],
+            "totals": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "embedding_tokens": 0,
+                "total_tokens": 0,
+                "cost_estimate_usd": 0.0,
+            },
+        }
+
+    wanted_steps = {"pdf_upload", "pdf_processing", "vectorization"}
+    events: List[Dict[str, Any]] = []
+
+    for jsonl_path in sorted(root.glob("usage_*.jsonl")):
+        try:
+            with open(jsonl_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if rec.get("document_id") != document_id:
+                        continue
+                    if rec.get("step") not in wanted_steps:
+                        continue
+                    events.append(rec)
+        except Exception:
+            continue
+
+    # Sort events by timestamp so frontend can show a clean timeline
+    def _ts(rec: Dict[str, Any]) -> str:
+        return rec.get("timestamp", "")
+
+    events.sort(key=_ts)
+
+    # Aggregate totals across these three steps
+    total_in = total_out = total_emb = 0
+    total_cost = 0.0
+    first_ts: Optional[str] = None
+    last_ts: Optional[str] = None
+    for rec in events:
+        ts = rec.get("timestamp")
+        if isinstance(ts, str):
+            if first_ts is None or ts < first_ts:
+                first_ts = ts
+            if last_ts is None or ts > last_ts:
+                last_ts = ts
+        total_in += int(rec.get("input_tokens", 0) or 0)
+        total_out += int(rec.get("output_tokens", 0) or 0)
+        total_emb += int(rec.get("embedding_tokens", 0) or 0)
+        c = rec.get("cost_estimate_usd")
+        if isinstance(c, (int, float)):
+            total_cost += float(c)
+
+    # Approximate end-to-end pipeline duration from first to last event timestamp (ISO strings).
+    pipeline_seconds: Optional[float] = None
+    if first_ts and last_ts:
+        try:
+            start_dt = datetime.fromisoformat(first_ts.replace("Z", "+00:00"))
+            end_dt = datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
+            pipeline_seconds = max(0.0, (end_dt - start_dt).total_seconds())
+        except Exception:
+            pipeline_seconds = None
+
+    totals = {
+        "input_tokens": total_in,
+        "output_tokens": total_out,
+        "embedding_tokens": total_emb,
+        "total_tokens": total_in + total_out + total_emb,
+        "cost_estimate_usd": round(total_cost, 8),
+        "pipeline_seconds": pipeline_seconds,
+        "pipeline_start": first_ts,
+        "pipeline_end": last_ts,
+    }
+
+    return {
+        "document_id": document_id,
+        "events": events,
+        "totals": totals,
     }
