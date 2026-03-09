@@ -126,6 +126,11 @@ export function useDeleteDocument(documentId) {
   return useMutation({
     mutationFn: () => deleteDocumentApi(documentId),
     onSuccess: () => {
+      // Optimistically remove the deleted document from the cached list
+      qc.setQueryData(documentKeys.list(), (old) => {
+        if (!Array.isArray(old)) return old
+        return old.filter((doc) => doc.document_id !== documentId)
+      })
       qc.invalidateQueries({ queryKey: documentKeys.list() })
       qc.removeQueries({ queryKey: documentKeys.detail(documentId) })
     },

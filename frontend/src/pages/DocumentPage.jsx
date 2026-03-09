@@ -4,6 +4,7 @@ import { useDocument, useDocumentSummary, useVectorize, useDeleteDocument } from
 import MarkdownViewer from '../components/MarkdownViewer'
 import ChatPanel from '../components/ChatPanel'
 import DocumentToolbar from '../components/DocumentToolbar'
+import ConfirmModal from '../components/ConfirmModal'
 
 function getDocumentDisplayName(doc, documentId) {
   if (!doc) return documentId || ''
@@ -32,6 +33,7 @@ export default function DocumentPage() {
   const [activeHighlight, setActiveHighlight] = useState(null)
   const [isMarkdownOpen, setIsMarkdownOpen] = useState(false)
   const [quickSummary, setQuickSummary] = useState(null)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
 
   useEffect(() => {
     vectorizeTriggered.current = false
@@ -54,6 +56,16 @@ export default function DocumentPage() {
     }
   }, [doc?.status, doc?.markdown_path])
 
+  // If the document no longer exists (e.g. deleted in another tab),
+  // redirect back to the landing page instead of showing a plain error.
+  useEffect(() => {
+    if (!error) return
+    const msg = String(error?.message || '').toLowerCase()
+    if (msg.includes('not found') || msg.includes('no such document')) {
+      navigate('/', { replace: true })
+    }
+  }, [error, navigate])
+
   const ready = doc?.status === 'ready'
   const { data: summaryData, isLoading: isSummaryLoading, isError: isSummaryError } = useDocumentSummary(documentId, {
     enabled: !!documentId && ready,
@@ -72,25 +84,24 @@ export default function DocumentPage() {
     )
   }
 
-  if (error) {
-    return (
-      <div className="flex-1 flex items-center justify-center text-red-600" role="alert">
-        {error?.message || 'Document not found'}
-      </div>
-    )
-  }
-
   if (!documentId) return null
 
   const handleDelete = () => {
     if (!documentId) return
-    const confirmed = window.confirm('Delete this chat and all associated data for this document? This cannot be undone.')
-    if (!confirmed) return
+    setShowDeleteConfirm(true)
+  }
+
+  const handleDeleteConfirm = () => {
+    setShowDeleteConfirm(false)
     deleteMutation.mutate(undefined, {
       onSuccess: () => {
         navigate('/', { replace: true })
       },
     })
+  }
+
+  const handleDeleteCancel = () => {
+    setShowDeleteConfirm(false)
   }
 
   return (
@@ -231,6 +242,18 @@ export default function DocumentPage() {
           />
         </div>
       </div>
+
+      <ConfirmModal
+        isOpen={showDeleteConfirm}
+        title="Delete Document"
+        message="Delete this chat and all associated data for this document? This cannot be undone."
+        confirmText="Delete"
+        cancelText="Cancel"
+        confirmVariant="danger"
+        onConfirm={handleDeleteConfirm}
+        onCancel={handleDeleteCancel}
+        onClose={handleDeleteCancel}
+      />
     </div>
   )
 }
