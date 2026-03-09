@@ -90,24 +90,23 @@ export default function DocumentToolbar({
           </button>
         )}
 
-        {/* Economics */}
+        {/* Processing summary */}
         {documentReady && (
           <button
             type="button"
             onClick={() => setShowEconomics(true)}
             className="doc-toolbar-action-btn inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-sm transition-colors"
-            title="Show pipeline economics"
+            title="Show processing summary"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path
                 strokeLinecap="round"
                 strokeLinejoin="round"
                 strokeWidth={1.8}
-                d="M3 17l6-6 4 4 8-8"
+                d="M4 19h4V9H4v10zm6 0h4V5h-4v14zm6 0h4v-7h-4v7z"
               />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M3 7h4v10H3z" />
             </svg>
-            <span className="hidden sm:inline">Economics</span>
+            <span className="hidden sm:inline">Processing summary</span>
           </button>
         )}
       </div>

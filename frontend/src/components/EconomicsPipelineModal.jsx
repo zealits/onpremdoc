@@ -40,7 +40,7 @@ export default function EconomicsPipelineModal({ documentId, documentName, onClo
         <div className="flex items-center justify-between px-5 py-4 border-b theme-sidebar">
           <div>
             <h2 id="economics-modal-title" className="text-lg font-semibold">
-              Economics pipeline
+              Processing summary
             </h2>
             {documentName && (
               <p className="text-xs opacity-70 mt-0.5 truncate max-w-md">
