@@ -1,0 +1,228 @@
+import { useEconomicsPipeline } from '../api/hooks'
+
+export default function EconomicsPipelineModal({ documentId, documentName, onClose }) {
+  const { data, isLoading, isError, error, refetch, isFetching } = useEconomicsPipeline(documentId)
+
+  const events = data?.events ?? []
+  const totals = data?.totals ?? null
+
+  const uploadEvent = events.find((e) => e.step === 'pdf_upload') || null
+  const vectorizationEvent = events.find((e) => e.step === 'vectorization') || null
+  const pagesFromProcessing =
+    (events.find((e) => e.step === 'pdf_processing')?.extra?.total_pages ?? null) ||
+    vectorizationEvent?.extra?.total_pages ||
+    null
+
+  const filename = uploadEvent?.extra?.filename ?? null
+  const fileSizeBytes = uploadEvent?.extra?.file_size_bytes ?? null
+  const totalPages = pagesFromProcessing
+  const totalWords = vectorizationEvent?.extra?.total_words ?? null
+
+  const humanFileSize =
+    typeof fileSizeBytes === 'number'
+      ? (() => {
+          const kb = fileSizeBytes / 1024
+          const mb = kb / 1024
+          if (mb >= 1) return `${mb.toFixed(2)} MB`
+          if (kb >= 1) return `${kb.toFixed(1)} KB`
+          return `${fileSizeBytes} B`
+        })()
+      : null
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="economics-modal-title"
+    >
+      <div className="theme-card rounded-2xl shadow-2xl w-full max-w-4xl border max-h-[80vh] flex flex-col">
+        <div className="flex items-center justify-between px-5 py-4 border-b theme-sidebar">
+          <div>
+            <h2 id="economics-modal-title" className="text-lg font-semibold">
+              Economics pipeline
+            </h2>
+            {documentName && (
+              <p className="text-xs opacity-70 mt-0.5 truncate max-w-md">
+                {documentName}
+              </p>
+            )}
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => refetch()}
+              disabled={isFetching}
+              className="text-xs px-3 py-1.5 rounded-lg border theme-sidebar-muted disabled:opacity-50"
+            >
+              {isFetching ? 'Refreshing…' : 'Refresh'}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="p-1 rounded-lg theme-sidebar-muted hover:opacity-80"
+              aria-label="Close"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div className="p-5 overflow-auto text-sm space-y-4">
+          {isLoading ? (
+            <div className="flex items-center gap-2 theme-sidebar-muted">
+              <span className="inline-block w-4 h-4 rounded-full border-2 border-indigo-400/60 border-t-transparent animate-spin" />
+              Loading economics data…
+            </div>
+          ) : isError ? (
+            <div className="text-sm text-rose-400">
+              {error?.message || 'Failed to load economics pipeline data.'}
+            </div>
+          ) : !data ? (
+            <div className="theme-sidebar-muted">No economics data available for this document.</div>
+          ) : (
+            <>
+              <div className="space-y-4">
+                {(filename || totalPages != null || totalWords != null || humanFileSize) && (
+                  <div>
+                    <h3 className="font-semibold mb-2 text-inherit">Document stats</h3>
+                    <div className="border rounded-xl overflow-hidden">
+                      <table className="min-w-full text-xs sm:text-sm">
+                        <tbody>
+                          {filename && (
+                            <tr className="theme-card border-b">
+                              <td className="px-3 py-2">Filename</td>
+                              <td className="px-3 py-2 text-right">{filename}</td>
+                            </tr>
+                          )}
+                          {totalPages != null && (
+                            <tr className="theme-card border-b">
+                              <td className="px-3 py-2">Number of pages</td>
+                              <td className="px-3 py-2 text-right">{totalPages}</td>
+                            </tr>
+                          )}
+                          {totalWords != null && (
+                            <tr className="theme-card border-b">
+                              <td className="px-3 py-2">Number of words</td>
+                              <td className="px-3 py-2 text-right">{totalWords}</td>
+                            </tr>
+                          )}
+                          {humanFileSize && (
+                            <tr className="theme-card">
+                              <td className="px-3 py-2">File size</td>
+                              <td className="px-3 py-2 text-right">
+                                {humanFileSize}
+                                {typeof fileSizeBytes === 'number' ? ` (${fileSizeBytes.toLocaleString()} bytes)` : ''}
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {totals && (
+                <div>
+                  <h3 className="font-semibold mb-2 text-inherit">Totals</h3>
+                  <div className="border rounded-xl overflow-hidden">
+                    <table className="min-w-full text-xs sm:text-sm">
+                      <tbody>
+                        <tr className="theme-card border-b">
+                          <td className="px-3 py-2">Input tokens</td>
+                          <td className="px-3 py-2 text-right">{totals.input_tokens}</td>
+                        </tr>
+                        <tr className="theme-card border-b">
+                          <td className="px-3 py-2">Output tokens</td>
+                          <td className="px-3 py-2 text-right">{totals.output_tokens}</td>
+                        </tr>
+                        <tr className="theme-card border-b">
+                          <td className="px-3 py-2">Embedding tokens</td>
+                          <td className="px-3 py-2 text-right">{totals.embedding_tokens}</td>
+                        </tr>
+                        <tr className="theme-card border-b">
+                          <td className="px-3 py-2">Total tokens</td>
+                          <td className="px-3 py-2 text-right">{totals.total_tokens}</td>
+                        </tr>
+                        <tr className="theme-card border-b">
+                          <td className="px-3 py-2">Cost estimate (USD)</td>
+                          <td className="px-3 py-2 text-right">
+                            {totals.cost_estimate_usd != null
+                              ? totals.cost_estimate_usd.toFixed(6)
+                              : '-'}
+                          </td>
+                        </tr>
+                        <tr className="theme-card">
+                          <td className="px-3 py-2">Pipeline duration (s)</td>
+                          <td className="px-3 py-2 text-right">
+                            {totals.pipeline_seconds != null
+                              ? totals.pipeline_seconds.toFixed(2)
+                              : '-'}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <h3 className="font-semibold mb-2 text-inherit">Events</h3>
+                <div className="border rounded-xl overflow-x-auto">
+                  <table className="min-w-max w-full text-xs sm:text-sm">
+                    <thead className="theme-sidebar text-left">
+                      <tr>
+                        <th className="px-3 py-2 whitespace-nowrap">Step</th>
+                        <th className="px-3 py-2 whitespace-nowrap">Phase</th>
+                        <th className="px-3 py-2 whitespace-nowrap">Timestamp</th>
+                        <th className="px-3 py-2 whitespace-nowrap text-right">Input</th>
+                        <th className="px-3 py-2 whitespace-nowrap text-right">Output</th>
+                        <th className="px-3 py-2 whitespace-nowrap text-right">Embedding</th>
+                        <th className="px-3 py-2 whitespace-nowrap text-right">Total tokens</th>
+                        <th className="px-3 py-2 whitespace-nowrap text-right">Cost (USD)</th>
+                        <th className="px-3 py-2 whitespace-nowrap">Model</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {events.map((evt, idx) => (
+                        <tr key={`${evt.timestamp}-${idx}`} className="border-t theme-card">
+                          <td className="px-3 py-2 whitespace-nowrap">{evt.step}</td>
+                          <td className="px-3 py-2 whitespace-nowrap">{evt.phase}</td>
+                          <td className="px-3 py-2 whitespace-nowrap">
+                            {new Date(evt.timestamp).toLocaleString()}
+                          </td>
+                          <td className="px-3 py-2 whitespace-nowrap text-right">
+                            {evt.input_tokens ?? 0}
+                          </td>
+                          <td className="px-3 py-2 whitespace-nowrap text-right">
+                            {evt.output_tokens ?? 0}
+                          </td>
+                          <td className="px-3 py-2 whitespace-nowrap text-right">
+                            {evt.embedding_tokens ?? 0}
+                          </td>
+                          <td className="px-3 py-2 whitespace-nowrap text-right">
+                            {evt.total_tokens ?? 0}
+                          </td>
+                          <td className="px-3 py-2 whitespace-nowrap text-right">
+                            {evt.pricing?.cost_display ??
+                              (evt.cost_estimate_usd != null
+                                ? evt.cost_estimate_usd.toFixed(6)
+                                : '-')}
+                          </td>
+                          <td className="px-3 py-2 whitespace-nowrap">{evt.model}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}

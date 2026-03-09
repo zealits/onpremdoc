@@ -263,3 +263,7 @@ export async function emailDocumentSummary(documentId, toEmail, subject = null) 
     body: JSON.stringify({ to_email: toEmail, subject: subject || undefined }),
   })
 }
+
+export async function getEconomicsPipeline(documentId) {
+  return request(`/economics/pipeline/${documentId}`)
+}

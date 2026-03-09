@@ -18,6 +18,7 @@ import {
   searchDocument,
   extractFromDocument,
   emailDocumentSummary,
+  getEconomicsPipeline,
 } from './client'
 
 export const documentKeys = {
@@ -152,5 +153,14 @@ export function useExtractFromDocument(documentId) {
 export function useEmailDocumentSummary(documentId) {
   return useMutation({
     mutationFn: ({ toEmail, subject }) => emailDocumentSummary(documentId, toEmail, subject),
+  })
+}
+
+export function useEconomicsPipeline(documentId) {
+  return useQuery({
+    queryKey: [...documentKeys.detail(documentId), 'economics', 'pipeline'],
+    queryFn: () => getEconomicsPipeline(documentId),
+    enabled: !!documentId,
+    staleTime: 5 * 60 * 1000,
   })
 }

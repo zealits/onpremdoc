@@ -1,11 +1,8 @@
 import { useState } from 'react'
-import {
-  useDocumentSummary,
-  useExtractFromDocument,
-  useEmailDocumentSummary,
-} from '../api/hooks'
+import { useDocumentSummary, useExtractFromDocument, useEmailDocumentSummary } from '../api/hooks'
 import ExtractModal from './ExtractModal'
 import EmailModal from './EmailModal'
+import EconomicsPipelineModal from './EconomicsPipelineModal'
 
 export default function DocumentToolbar({
   documentId,
@@ -19,6 +16,7 @@ export default function DocumentToolbar({
   const [showExtract, setShowExtract] = useState(false)
   const [showEmail, setShowEmail] = useState(false)
   const [showSummaryPanel, setShowSummaryPanel] = useState(false)
+  const [showEconomics, setShowEconomics] = useState(false)
 
   const { data: summaryData, refetch: refetchSummary, isFetching: summaryFetching } = useDocumentSummary(documentId, {
     enabled: !!documentId && documentReady && showSummaryPanel,
@@ -91,6 +89,27 @@ export default function DocumentToolbar({
             <span className="hidden sm:inline">Email</span>
           </button>
         )}
+
+        {/* Economics */}
+        {documentReady && (
+          <button
+            type="button"
+            onClick={() => setShowEconomics(true)}
+            className="doc-toolbar-action-btn inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-sm transition-colors"
+            title="Show pipeline economics"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={1.8}
+                d="M3 17l6-6 4 4 8-8"
+              />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M3 7h4v10H3z" />
+            </svg>
+            <span className="hidden sm:inline">Economics</span>
+          </button>
+        )}
       </div>
 
       {/* Summary panel (inline) */}
@@ -144,6 +163,14 @@ export default function DocumentToolbar({
           documentName={documentName}
           emailMutation={emailMutation}
           onClose={() => setShowEmail(false)}
+        />
+      )}
+
+      {showEconomics && (
+        <EconomicsPipelineModal
+          documentId={documentId}
+          documentName={documentName}
+          onClose={() => setShowEconomics(false)}
         />
       )}
     </div>
