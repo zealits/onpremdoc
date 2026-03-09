@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Processing Interface Demo - Light & Dark Theme</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* Copy the relevant CSS from our index.css */
+        @keyframes processing-shimmer {
+          0% { background-position: -200% 0; }
+          100% { background-position: 200% 0; }
+        }
+
+        @keyframes processing-pulse-soft {
+          0%, 100% { opacity: 0.6; transform: scale(1); }
+          50% { opacity: 1; transform: scale(1.02); }
+        }
+
+        @keyframes processing-float {
+          0%, 100% { transform: translateY(0); }
+          50% { transform: translateY(-6px); }
+        }
+
+        @keyframes processing-glow {
+          0%, 100% { box-shadow: 0 0 20px rgba(99, 102, 241, 0.15); }
+          50% { box-shadow: 0 0 32px rgba(99, 102, 241, 0.25); }
+        }
+
+        @keyframes processing-fade-in {
+          from { opacity: 0; transform: translateY(8px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+
+        .animate-processing-shimmer {
+          background: linear-gradient(
+            90deg,
+            rgba(99, 102, 241, 0.4) 0%,
+            rgba(139, 92, 246, 0.6) 50%,
+            rgba(99, 102, 241, 0.4) 100%
+          );
+          background-size: 200% 100%;
+          animation: processing-shimmer 2s ease-in-out infinite;
+        }
+
+        .animate-processing-pulse-soft {
+          animation: processing-pulse-soft 2s ease-in-out infinite;
+        }
+
+        .animate-processing-float {
+          animation: processing-float 2.5s ease-in-out infinite;
+        }
+
+        .animate-processing-glow {
+          animation: processing-glow 2s ease-in-out infinite;
+        }
+
+        .animate-processing-fade-in {
+          animation: processing-fade-in 0.5s ease-out forwards;
+        }
+
+        :root {
+          --app-bg: radial-gradient(circle at top left, #e5e7eb 0, #ffffff 55%, #e5e7eb 100%);
+          --text-color: #020617;
+          --main-bg: #f3f4f6;
+          --card-bg: #ffffff;
+          --card-border: #e5e7eb;
+          --card-text: #111827;
+          --sidebar-text-muted: #6b7280;
+        }
+
+        :root[data-theme='dark'] {
+          --app-bg: radial-gradient(circle at top left, #020617 0, #020617 45%, #020617 100%);
+          --text-color: #e5e7eb;
+          --main-bg: rgba(15, 23, 42, 0.8);
+          --card-bg: rgba(15, 23, 42, 0.85);
+          --card-border: #1e293b;
+          --card-text: #e5e7eb;
+          --sidebar-text-muted: #9ca3af;
+        }
+
+        body {
+          font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+          background: var(--app-bg);
+          color: var(--text-color);
+          transition: all 0.3s ease;
+        }
+
+        .theme-main {
+          background-color: var(--main-bg);
+        }
+
+        .theme-card {
+          background-color: var(--card-bg);
+          border-color: var(--card-border);
+          color: var(--card-text);
+        }
+
+        .theme-sidebar-muted {
+          color: var(--sidebar-text-muted);
+        }
+
+        .processing-step-card {
+          transition: all 0.3s ease;
+        }
+
+        .processing-step-card:hover {
+          transform: translateY(-1px);
+        }
+
+        .processing-main-icon {
+          background: linear-gradient(135deg, rgba(99, 102, 241, 0.05), rgba(139, 92, 246, 0.05));
+          backdrop-filter: blur(10px);
+        }
+
+        [data-theme='dark'] .processing-main-icon {
+          background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(139, 92, 246, 0.1));
+        }
+
+        [data-theme='dark'] .animate-processing-shimmer {
+          background: linear-gradient(
+            90deg,
+            rgba(99, 102, 241, 0.6) 0%,
+            rgba(139, 92, 246, 0.8) 50%,
+            rgba(99, 102, 241, 0.6) 100%
+          );
+        }
+
+        /* Additional dark theme adjustments */
+        [data-theme='dark'] .bg-green-100 {
+          background-color: rgba(34, 197, 94, 0.3);
+        }
+
+        [data-theme='dark'] .text-green-600 {
+          color: #4ade80;
+        }
+
+        [data-theme='dark'] .bg-gray-100 {
+          background-color: #374151;
+        }
+
+        [data-theme='dark'] .text-gray-400 {
+          color: #9ca3af;
+        }
+
+        [data-theme='dark'] .bg-gray-200 {
+          background-color: #4b5563;
+        }
+    </style>
+</head>
+<body class="min-h-screen">
+    <div class="flex h-screen">
+        <!-- Theme Toggle -->
+        <div class="absolute top-4 right-4 z-10">
+            <button onclick="toggleTheme()" class="px-4 py-2 rounded-lg bg-indigo-500 text-white hover:bg-indigo-600 transition-colors">
+                <span id="theme-text">Switch to Dark</span>
+            </button>
+        </div>
+
+        <!-- Processing Interface -->
+        <div class="flex flex-col h-full items-center justify-center p-8 theme-main border-l theme-card w-full">
+            <div class="animate-processing-fade-in text-center max-w-md w-full">
+                <!-- Main Processing Icon -->
+                <div class="relative inline-flex justify-center mb-8">
+                    <div class="absolute inset-0 rounded-full bg-indigo-500/20 animate-ping" style="animation-duration: 3s;"></div>
+                    <div class="relative w-20 h-20 rounded-2xl theme-card border-2 border-indigo-400/30 shadow-xl flex items-center justify-center animate-processing-float processing-main-icon">
+                        <div id="main-icon" class="w-10 h-10 rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center animate-processing-glow text-white">
+                            <!-- This will be updated by JS -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Current Step Info -->
+                <div class="mb-8">
+                    <h3 id="step-title" class="text-xl font-semibold mb-2 theme-card text-inherit">Processing Document</h3>
+                    <p id="step-description" class="theme-sidebar-muted text-sm leading-relaxed">Analyzing file structure and content</p>
+                    <p class="theme-sidebar-muted text-xs mt-2 opacity-75">Processing: nelson_mandela_compressed.pdf</p>
+                </div>
+
+                <!-- Progress Steps -->
+                <div id="progress-steps" class="space-y-4 mb-8">
+                    <!-- Steps will be populated by JavaScript -->
+                </div>
+
+                <!-- Loading Progress Bar -->
+                <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 overflow-hidden">
+                    <div id="progress-bar" class="h-full bg-gradient-to-r from-indigo-500 to-violet-600 rounded-full transition-all duration-500 animate-processing-shimmer" style="width: 25%;"></div>
+                </div>
+                
+                <p class="theme-sidebar-muted text-xs mt-4 opacity-75">
+                    This usually takes 30-60 seconds depending on document size
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const steps = [
+            {
+                id: "upload",
+                title: "Processing Document",
+                description: "Analyzing file structure and content",
+                icon: `<svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-4.5B4.875 8.25A2.625 2.625 0 0 0 2.25 10.875v8.25a2.625 2.625 0 0 0 2.625 2.625h6.75a2.625 2.625 0 0 0 2.625-2.625V18a.75.75 0 0 1 .75-.75ZM19.5 14.25h-2.625a1.125 1.125 0 0 1-1.125-1.125v-2.625a1.125 1.125 0 0 1 1.125-1.125H19.5m-12.75 3v-3m6 3v-3m-6 3h6m-6 0v3m6-3v3m-6-3h6" />
+                </svg>`
+            },
+            {
+                id: "extract",
+                title: "Extracting Content",
+                description: "Reading text and extracting key information",
+                icon: `<svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-4.5A2.625 2.625 0 0 0 9 8.25v8.25a2.625 2.625 0 0 0 2.625 2.625h6.75A2.625 2.625 0 0 0 21 18.375v-4.125ZM4.5 19.5l15-15m0 0H8.25m11.25 0v11.25" />
+                </svg>`
+            },
+            {
+                id: "vectorize",
+                title: "Creating Embeddings",
+                description: "Converting content into searchable vectors",
+                icon: `<svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423L16.5 15.75l.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z" />
+                </svg>`
+            },
+            {
+                id: "prepare",
+                title: "Preparing Chat",
+                description: "Setting up AI assistant for conversations",
+                icon: `<svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 0 1-2.555-.337A5.972 5.972 0 0 1 5.41 20.97a5.969 5.969 0 0 1-.474-.065 4.48 4.48 0 0 0 .978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25Z" />
+                </svg>`
+            }
+        ];
+
+        let currentStep = 0;
+
+        function updateProgress() {
+            const step = steps[currentStep];
+            
+            // Update main icon and text
+            document.getElementById('main-icon').innerHTML = step.icon;
+            document.getElementById('step-title').textContent = step.title;
+            document.getElementById('step-description').textContent = step.description;
+            
+            // Update progress bar
+            const progress = ((currentStep + 1) / steps.length) * 100;
+            document.getElementById('progress-bar').style.width = `${progress}%`;
+            
+            // Update steps display
+            renderSteps();
+            
+            // Move to next step
+            currentStep = (currentStep + 1) % steps.length;
+        }
+
+        function renderSteps() {
+            const container = document.getElementById('progress-steps');
+            container.innerHTML = '';
+            
+            steps.forEach((step, index) => {
+                const isActive = index === currentStep;
+                const isCompleted = index < currentStep;
+                const isPending = index > currentStep;
+                
+                const stepElement = document.createElement('div');
+                stepElement.className = 'flex items-center justify-between p-3 rounded-xl theme-card border processing-step-card';
+                
+                stepElement.innerHTML = `
+                    <div class="flex items-center gap-3">
+                        <div class="w-8 h-8 rounded-lg flex items-center justify-center transition-all duration-500 ${
+                            isActive 
+                                ? 'bg-gradient-to-br from-indigo-500 to-violet-600 text-white animate-processing-pulse-soft' 
+                                : isCompleted 
+                                    ? 'bg-green-100 text-green-600 dark:bg-green-900/30 dark:text-green-400'
+                                    : 'bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500'
+                        }">
+                            ${isCompleted ? `
+                                <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+                                </svg>
+                            ` : `<div class="w-4 h-4">${step.icon}</div>`}
+                        </div>
+                        <div class="text-left">
+                            <p class="text-sm font-medium transition-colors duration-500 ${
+                                isActive ? 'text-indigo-600 dark:text-indigo-400' : 'text-inherit'
+                            }">
+                                ${step.title}
+                            </p>
+                            <p class="text-xs theme-sidebar-muted">${step.description}</p>
+                        </div>
+                    </div>
+                    
+                    ${isActive ? `
+                        <div class="flex gap-1">
+                            <div class="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style="animation-delay: 0ms;"></div>
+                            <div class="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-bounce" style="animation-delay: 150ms;"></div>
+                            <div class="w-1.5 h-1.5 rounded-full bg-indigo-600 animate-bounce" style="animation-delay: 300ms;"></div>
+                        </div>
+                    ` : isPending ? `
+                        <div class="w-8 h-1 bg-gray-200 dark:bg-gray-700 rounded-full">
+                            <div class="w-0 h-full bg-indigo-500 rounded-full transition-all duration-500"></div>
+                        </div>
+                    ` : ''}
+                `;
+                
+                container.appendChild(stepElement);
+            });
+        }
+
+        function toggleTheme() {
+            const html = document.documentElement;
+            const themeText = document.getElementById('theme-text');
+            
+            if (html.getAttribute('data-theme') === 'dark') {
+                html.setAttribute('data-theme', 'light');
+                themeText.textContent = 'Switch to Dark';
+            } else {
+                html.setAttribute('data-theme', 'dark');
+                themeText.textContent = 'Switch to Light';
+            }
+        }
+
+        // Initialize
+        renderSteps();
+        
+        // Auto-cycle through steps
+        setInterval(updateProgress, 2500);
+    </script>
+</body>
+</html>

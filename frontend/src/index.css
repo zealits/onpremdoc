@@ -41,15 +41,29 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes processing-progress {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
 .animate-processing-shimmer {
   background: linear-gradient(
     90deg,
-    rgb(243 244 246) 0%,
-    rgb(238 242 255) 50%,
-    rgb(243 244 246) 100%
+    rgba(99, 102, 241, 0.6) 0%,
+    rgba(139, 92, 246, 0.8) 50%,
+    rgba(99, 102, 241, 0.6) 100%
   );
   background-size: 200% 100%;
   animation: processing-shimmer 2s ease-in-out infinite;
+}
+
+html[data-theme='light'] .animate-processing-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(99, 102, 241, 0.4) 0%,
+    rgba(139, 92, 246, 0.6) 50%,
+    rgba(99, 102, 241, 0.4) 100%
+  );
 }
 
 .animate-processing-pulse-soft {
@@ -108,9 +122,9 @@ body,
   --sidebar-item-hover-bg: #e5e7eb;
   --sidebar-item-active-bg: #e5e7eb;
   --sidebar-item-active-color: #111827;
-  --chat-assistant-bg: #111827;
-  --chat-assistant-text: #f9fafb;
-  --chat-assistant-border: #111827;
+  --chat-assistant-bg: #ffffff;
+  --chat-assistant-text: #111827;
+  --chat-assistant-border: #e5e7eb;
   --markdown-text: #111827;
 }
 
@@ -167,6 +181,14 @@ body {
   border-color: var(--chat-assistant-border);
 }
 
+.chat-assistant-bubble .chat-assistant-divider {
+  border-color: var(--card-border);
+}
+
+.chat-assistant-bubble .chat-assistant-muted {
+  color: var(--sidebar-text-muted);
+}
+
 .markdown-body {
   color: var(--markdown-text);
 }
@@ -179,6 +201,76 @@ body {
 html[data-theme='light'] .doc-header {
   background-color: #ffffff;
   border-bottom-color: #e5e7eb;
+}
+
+/* Document toolbar: search input and action buttons (theme-aware) */
+.doc-toolbar-search-input {
+  background-color: rgba(30, 41, 59, 0.6);
+  border-color: #475569;
+  color: #f1f5f9;
+}
+
+.doc-toolbar-search-input::placeholder {
+  color: #94a3b8;
+}
+
+.doc-toolbar-search-icon {
+  color: #94a3b8;
+}
+
+.doc-toolbar-clear-btn {
+  color: #94a3b8;
+}
+
+.doc-toolbar-clear-btn:hover {
+  color: #cbd5e1;
+}
+
+.doc-toolbar-action-btn {
+  border-color: #475569;
+  color: #cbd5e1;
+}
+
+.doc-toolbar-action-btn:hover {
+  background-color: rgba(51, 65, 85, 0.5);
+  border-color: #64748b;
+}
+
+html[data-theme='light'] .doc-toolbar-search-input {
+  background-color: #ffffff;
+  border-color: #e2e8f0;
+  color: #0f172a;
+}
+
+html[data-theme='light'] .doc-toolbar-search-input::placeholder {
+  color: #64748b;
+}
+
+html[data-theme='light'] .doc-toolbar-search-input:focus {
+  border-color: #818cf8;
+  --tw-ring-color: rgba(99, 102, 241, 0.5);
+}
+
+html[data-theme='light'] .doc-toolbar-search-icon {
+  color: #64748b;
+}
+
+html[data-theme='light'] .doc-toolbar-clear-btn {
+  color: #64748b;
+}
+
+html[data-theme='light'] .doc-toolbar-clear-btn:hover {
+  color: #475569;
+}
+
+html[data-theme='light'] .doc-toolbar-action-btn {
+  border-color: #d1d5db;
+  color: #374151;
+}
+
+html[data-theme='light'] .doc-toolbar-action-btn:hover {
+  background-color: #f3f4f6;
+  border-color: #9ca3af;
 }
 
 .chat-shell {
@@ -252,6 +344,84 @@ html[data-theme='light'] .upload-icon-box {
   font-weight: 500;
 }
 
+/* Email modal: theme-aware inputs and buttons */
+.email-modal-input {
+  background-color: rgba(30, 41, 59, 0.9);
+  border-color: #475569;
+  color: #f1f5f9;
+}
+
+.email-modal-input::placeholder {
+  color: #94a3b8;
+}
+
+.email-modal-muted {
+  color: #9ca3af;
+}
+
+.email-modal-cancel-btn {
+  border-color: #475569;
+  color: #cbd5e1;
+}
+
+.email-modal-cancel-btn:hover {
+  background-color: rgba(51, 65, 85, 0.6);
+}
+
+.email-modal-close-btn {
+  background-color: #334155;
+  color: #e2e8f0;
+}
+
+.email-modal-close-btn:hover {
+  background-color: #475569;
+}
+
+.email-modal-success-msg {
+  color: #9ca3af;
+}
+
+html[data-theme='light'] .email-modal-input {
+  background-color: #ffffff;
+  border-color: #e2e8f0;
+  color: #0f172a;
+}
+
+html[data-theme='light'] .email-modal-input::placeholder {
+  color: #64748b;
+}
+
+html[data-theme='light'] .email-modal-input:focus {
+  border-color: #818cf8;
+  --tw-ring-color: rgba(99, 102, 241, 0.5);
+}
+
+html[data-theme='light'] .email-modal-muted {
+  color: #6b7280;
+}
+
+html[data-theme='light'] .email-modal-cancel-btn {
+  border-color: #d1d5db;
+  color: #374151;
+}
+
+html[data-theme='light'] .email-modal-cancel-btn:hover {
+  background-color: #f3f4f6;
+}
+
+html[data-theme='light'] .email-modal-close-btn {
+  background-color: #e5e7eb;
+  color: #111827;
+}
+
+html[data-theme='light'] .email-modal-close-btn:hover {
+  background-color: #d1d5db;
+}
+
+html[data-theme='light'] .email-modal-success-msg {
+  color: #6b7280;
+}
+
 /* Premium dark scrollbars for columns and panels */
 .column-scroll {
   scrollbar-width: thin;
@@ -323,4 +493,44 @@ html[data-theme='light'] .sidebar-logout-btn:hover {
   border-color: rgba(248, 113, 113, 0.6);
   background-color: rgba(248, 113, 113, 0.1);
   color: #b91c1c;
+}
+
+/* Processing interface enhancements */
+.processing-step-card {
+  transition: all 0.3s ease;
+}
+
+.processing-step-card:hover {
+  transform: translateY(-1px);
+}
+
+.processing-main-icon {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(139, 92, 246, 0.1));
+  backdrop-filter: blur(10px);
+}
+
+html[data-theme='light'] .processing-main-icon {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.05), rgba(139, 92, 246, 0.05));
+  backdrop-filter: blur(10px);
+}
+
+/* Processing step icons for light theme */
+html[data-theme='light'] .bg-green-100 {
+  background-color: #dcfce7;
+}
+
+html[data-theme='light'] .text-green-600 {
+  color: #16a34a;
+}
+
+html[data-theme='light'] .bg-gray-100 {
+  background-color: #f3f4f6;
+}
+
+html[data-theme='light'] .text-gray-400 {
+  color: #9ca3af;
+}
+
+html[data-theme='light'] .bg-gray-200 {
+  background-color: #e5e7eb;
 }

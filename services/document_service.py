@@ -948,7 +948,8 @@ def send_document_summary_email(document_id: str, to_email: str, subject: Option
 
     smtp_host = os.environ.get("SMTP_HOST")
     smtp_port = int(os.environ.get("SMTP_PORT", "587"))
-    smtp_user = os.environ.get("SMTP_USER")
+    # Support both SMTP_MAIL and SMTP_USER for sender/login
+    smtp_user = os.environ.get("SMTP_USER") or os.environ.get("SMTP_MAIL")
     smtp_pass = os.environ.get("SMTP_PASSWORD")
     email_from = os.environ.get("EMAIL_FROM") or smtp_user
 
@@ -960,10 +961,16 @@ def send_document_summary_email(document_id: str, to_email: str, subject: Option
             msg["Subject"] = email_subject
             msg["From"] = email_from
             msg["To"] = to_email
-            with smtplib.SMTP(smtp_host, smtp_port) as server:
-                server.starttls()
-                server.login(smtp_user, smtp_pass)
-                server.sendmail(email_from, [to_email], msg.as_string())
+            # Port 465 uses SSL (SMTPS); 587 uses STARTTLS
+            if smtp_port == 465:
+                with smtplib.SMTP_SSL(smtp_host, smtp_port) as server:
+                    server.login(smtp_user, smtp_pass)
+                    server.sendmail(email_from, [to_email], msg.as_string())
+            else:
+                with smtplib.SMTP(smtp_host, smtp_port) as server:
+                    server.starttls()
+                    server.login(smtp_user, smtp_pass)
+                    server.sendmail(email_from, [to_email], msg.as_string())
             return {"sent": True, "to": to_email, "message": "Email sent successfully."}
         except Exception as e:
             logger.exception("SMTP send failed")

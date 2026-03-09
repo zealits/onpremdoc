@@ -145,7 +145,7 @@ export default function DocumentPage() {
               ? isMarkdownOpen
                 ? 'w-1/2 opacity-100'
                 : 'w-0 opacity-0 pointer-events-none'
-              : 'w-1/2'
+              : 'w-0'
           }`}
         >
           {ready ? (
@@ -157,7 +157,7 @@ export default function DocumentPage() {
               />
             )
           ) : (
-            <div className="flex-1 flex items-center justify-center bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 p-6 min-h-0">
+            <div className="hidden">
               <div className="animate-processing-fade-in max-w-sm w-full text-center">
                 <div className="relative inline-flex justify-center mb-6">
                   <div className="absolute inset-0 rounded-full bg-indigo-500/35 animate-ping" style={{ animationDuration: '2s' }} />
@@ -168,7 +168,6 @@ export default function DocumentPage() {
                   </div>
                 </div>
                 <h3 className="text-slate-100 font-semibold text-lg mb-1">
-                  {doc?.status === 'uploaded' && 'Waiting for processing'}
                   {(doc?.status === 'processing' || doc?.status === 'vectorized') && 'Preparing your document'}
                 </h3>
                 <p className="text-slate-400 text-sm mb-6">
