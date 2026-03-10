@@ -22,7 +22,11 @@ except ImportError:
     sys.exit(1)
 
 # LangChain imports
-from langchain_community.vectorstores import Chroma
+try:
+    # Preferred new package (avoids deprecation warning)
+    from langchain_chroma import Chroma
+except ImportError:  # Fallback for environments without langchain-chroma installed yet
+    from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
 from langgraph.graph import StateGraph, END
 from typing_extensions import TypedDict

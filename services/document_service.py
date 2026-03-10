@@ -486,10 +486,11 @@ def trigger_vectorize(document_id: str) -> None:
 
     usage = final_state.get("token_usage") or {}
     embedding_tokens = int(usage.get("embedding_tokens", 0) or 0)
-    llm_tokens = int(usage.get("llm_tokens", 0) or 0)
+    llm_input_tokens = int(usage.get("llm_tokens", 0) or 0)
+    llm_output_tokens = int(usage.get("llm_output_tokens", 0) or 0)
     total_chunks = int(usage.get("total_chunks", 0) or 0)
     truncated_chunks = int(usage.get("truncated_chunks", 0) or 0)
-    total_tokens = embedding_tokens + llm_tokens
+    total_tokens = embedding_tokens + llm_input_tokens + llm_output_tokens
 
     total_pages = None
     total_words = None
@@ -513,7 +514,8 @@ def trigger_vectorize(document_id: str) -> None:
     log_vectorization(
         document_id,
         embedding_tokens=embedding_tokens,
-        llm_tokens=llm_tokens,
+        llm_input_tokens=llm_input_tokens,
+        llm_output_tokens=llm_output_tokens,
         total_chunks=total_chunks,
         truncated_chunks=truncated_chunks,
         model_embed=get_embedding_model_id(),
@@ -845,6 +847,69 @@ def get_document_markdown(document_id: str) -> str:
     if not md_path.exists():
         raise ValueError("Markdown file not found")
     return md_path.read_text(encoding="utf-8")
+
+
+def get_page_brief_summaries(document_id: str) -> List[Dict[str, Any]]:
+    """
+    Return section-level page summaries for a document.
+    Data source: Plan E file *_page_brief_summaries.json produced by VectorizerE,
+    which currently has the shape:
+        [
+          {"start_page": int, "end_page": int, "summary": str},
+          ...
+        ]
+    Raises ValueError if document or summaries are not found.
+    """
+    doc_path = get_document_path(document_id)
+    if not doc_path.exists():
+        raise ValueError(f"Document {document_id} not found")
+
+    plan_e_dir = doc_path / "E"
+    if not plan_e_dir.exists():
+        raise ValueError("Document not vectorized. Run vectorization first.")
+
+    # Find the most recent *_page_brief_summaries.json in Plan E folder
+    candidates = list(plan_e_dir.glob("*_page_brief_summaries.json"))
+    if not candidates:
+        raise ValueError("Page brief summaries not found for this document.")
+
+    summaries_path = max(candidates, key=lambda p: p.stat().st_mtime)
+
+    try:
+        with summaries_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        raise ValueError(f"Failed to read page brief summaries: {e}") from e
+
+    # Normalise to list of dicts with start_page, end_page, summary
+    out: List[Dict[str, Any]] = []
+    if isinstance(data, list):
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            start_page = item.get("start_page")
+            end_page = item.get("end_page")
+            summary = (item.get("summary") or "").strip()
+            if start_page is None or end_page is None or not summary:
+                continue
+            try:
+                sp = int(start_page)
+                ep = int(end_page)
+            except (TypeError, ValueError):
+                continue
+            if sp <= 0 or ep < sp:
+                continue
+            out.append({"start_page": sp, "end_page": ep, "summary": summary})
+    else:
+        # Backwards-compatibility: if an older dict format is ever passed through,
+        # just return empty rather than raising.
+        out = []
+
+    if not out:
+        raise ValueError("No valid page brief summaries found for this document.")
+
+    out.sort(key=lambda x: x["start_page"])
+    return out
 
 
 def _distance_to_similarity(distance: float, scale_factor: float = 150.0) -> float:

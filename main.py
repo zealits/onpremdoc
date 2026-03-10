@@ -228,6 +228,13 @@ class PageSummaryResponse(BaseModel):
     total_chunks: int
 
 
+class PageRangeSummary(BaseModel):
+    """Section-level summary over a page range (start_page–end_page)."""
+    start_page: int = Field(..., description="First page in the range")
+    end_page: int = Field(..., description="Last page in the range (inclusive)")
+    summary: str = Field(..., description="1–2 sentence summary of what this page range contains")
+
+
 class ErrorResponse(BaseModel):
     """Error response"""
     error: str
@@ -576,6 +583,36 @@ async def get_document_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{pdf_path.name}"'},
     )
+
+
+@app.get(
+    "/documents/{document_id}/page_ranges",
+    response_model=List[PageRangeSummary],
+    tags=["Documents"],
+)
+async def get_page_ranges(
+    document_id: str = PathParam(..., description="Document ID"),
+    current_user=Depends(get_current_user),
+):
+    """
+    Get section-level page ranges with 1–2 sentence summaries for a document.
+
+    Data comes from the Plan E file *_page_brief_summaries.json produced
+    during vectorization, where each entry has:
+      - start_page
+      - end_page
+      - summary
+    """
+    try:
+        document_service.ensure_document_belongs_to_user(document_id, current_user.id)
+        ranges = document_service.get_page_brief_summaries(document_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error getting page ranges for document {document_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to load page ranges")
+
+    return [PageRangeSummary(**r) for r in ranges]
 
 
 @app.post("/upload", response_model=ProcessPDFResponse, tags=["Documents"])

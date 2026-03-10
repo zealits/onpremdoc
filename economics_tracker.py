@@ -227,7 +227,8 @@ def log_pdf_processing(document_id: str, total_pages: Optional[int] = None) -> P
 def log_vectorization(
     document_id: str,
     embedding_tokens: int,
-    llm_tokens: int,
+    llm_input_tokens: int,
+    llm_output_tokens: int,
     total_chunks: int,
     truncated_chunks: int = 0,
     model_embed: str = "nomic-embed-text",
@@ -237,7 +238,12 @@ def log_vectorization(
     total_tokens: Optional[int] = None,
     duration_seconds: Optional[float] = None,
 ) -> Path:
-    """Log vectorization step (chunk summaries + embeddings)."""
+    """Log vectorization step (chunk summaries + embeddings).
+
+    llm_input_tokens / llm_output_tokens are approximate counts for the
+    lightweight LLM calls used during vectorization (per-page summaries,
+    section grouping, etc.).
+    """
     extra: Dict[str, Any] = {
         "total_chunks": total_chunks,
         "truncated_chunks": truncated_chunks,
@@ -255,8 +261,8 @@ def log_vectorization(
         step_name="vectorization",
         phase="vectorization",
         document_id=document_id,
-        input_tokens=llm_tokens,  # LLM input for summaries
-        output_tokens=0,          # Could split if we had output count
+        input_tokens=llm_input_tokens,
+        output_tokens=llm_output_tokens,
         embedding_tokens=embedding_tokens,
         model=f"{model_embed}+{model_llm}",
         extra=extra,

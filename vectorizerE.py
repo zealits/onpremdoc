@@ -23,7 +23,11 @@ except ImportError:
     logging.warning("networkx not available. Install with: pip install networkx")
 
 # LangChain imports
-from langchain_community.vectorstores import Chroma
+try:
+    # Preferred new package (avoids deprecation warning)
+    from langchain_chroma import Chroma
+except ImportError:  # Fallback for environments without langchain-chroma installed yet
+    from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
 from langgraph.graph import StateGraph, END
 from typing_extensions import TypedDict
@@ -84,7 +88,8 @@ class TokenTracker:
         
         self.stats = {
             "embedding_tokens": 0,
-            "llm_tokens": 0,
+            "llm_tokens": 0,          # estimated LLM input tokens
+            "llm_output_tokens": 0,   # estimated LLM output tokens
             "total_chunks": 0,
             "truncated_chunks": 0
         }
@@ -205,6 +210,7 @@ class TokenTracker:
         self.stats = {
             "embedding_tokens": 0,
             "llm_tokens": 0,
+            "llm_output_tokens": 0,
             "total_chunks": 0,
             "truncated_chunks": 0,
         }
@@ -856,6 +862,12 @@ Page content:
     try:
         response = llm.invoke(prompt)
         response_text = (getattr(response, "content", None) or str(response)).strip()
+        # Track approximate LLM output tokens
+        try:
+            out_tokens = token_tracker.count_tokens(response_text)
+            token_tracker.stats["llm_output_tokens"] = token_tracker.stats.get("llm_output_tokens", 0) + out_tokens
+        except Exception:
+            pass
         classification = response_text
         
         # Clean up the response
@@ -1004,25 +1016,47 @@ def summarize_page_brief(
 Page content:
 {text_for_llm}
 
-Write ONE concise summary of this page in AT MOST 50 words.
+Write EXACTLY ONE concise sentence that summarizes this page.
 
 Rules:
+- The summary MUST be a single sentence.
 - Do NOT list bullet points.
 - Do NOT include headings or section titles.
-- Write 1–3 short sentences, total length <= 50 words.
-- Return ONLY the summary text, no prefixes or labels."""
+- Keep it short (ideally <= 35 words).
+- Return ONLY the sentence, no prefixes or labels."""
 
     try:
         response = llm.invoke(prompt)
         response_text = (getattr(response, "content", None) or str(response)).strip()
 
-        # Take first line/paragraph as summary candidate
-        summary = response_text.split("\n")[0].strip() or response_text.strip()
+        # Take first non-empty line/paragraph as candidate
+        summary = ""
+        for line in response_text.split("\n"):
+            line = line.strip()
+            if line:
+                summary = line
+                break
+        if not summary:
+            summary = response_text.strip()
 
-        # Hard-enforce ~50-word cap
+        # Enforce single-sentence output: split on sentence-ending punctuation.
+        # Prefer the first reasonably long fragment as the summary.
+        import re as _re  # local import to avoid top-level pollution
+        sentence_candidates = _re.split(r"(?<=[.!?])\s+", summary)
+        sentence_candidates = [s.strip() for s in sentence_candidates if s.strip()]
+        if sentence_candidates:
+            # Choose first fragment with at least a few words, otherwise the very first.
+            chosen = sentence_candidates[0]
+            for s in sentence_candidates:
+                if len(s.split()) >= 5:
+                    chosen = s
+                    break
+            summary = chosen
+
+        # Hard-enforce word cap (~35 words) while keeping it a single sentence.
         words = summary.split()
-        if len(words) > 50:
-            summary = " ".join(words[:50]).rstrip(" ,;") + "..."
+        if len(words) > 35:
+            summary = " ".join(words[:35]).rstrip(" ,;") + "..."
 
         if not summary:
             summary = "This page contains document content. Please refer to the full document for details."
@@ -1400,10 +1434,14 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
     json_output_path = plan_e_dir / f"{doc_stem}_vector_mapping.json"
     graph_output_path = plan_e_dir / f"{doc_stem}_document_graph.json"
     
-    # Initialize embeddings only (no LLM during vectorization for speed/cost)
-    logger.info("Initializing embeddings (LLM disabled for vectorization)...")
-    llm = None  # kept for type compatibility; not used below
+    # Initialize embeddings and LLM (LLM used only for lightweight page summaries)
+    logger.info("Initializing embeddings and LLM for vectorization (page summaries)...")
     embeddings = get_embeddings()
+    try:
+        llm = get_llm(temperature=0)
+    except Exception as e:
+        logger.warning(f"Failed to initialize LLM for page summaries: {e}")
+        llm = None
     
     # Initialize vector store
     vector_store = Chroma(
@@ -1512,13 +1550,136 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
     logger.info(f"  - Total sections in document: {len(structure['sections'])}")
     logger.info(f"Created {section_edges_added} parent-child section edges")
     
-    # Optional: page-level metadata (LLM-based classification/summaries) is disabled for speed.
-    # We still load page_mapping (for page numbers in chunks), but we do NOT call the LLM here.
+    # Optional: page-level brief summaries (one per page) for quick overview,
+    # then grouped into logical page ranges with 1–2 sentence summaries.
     page_mapping = state.get("page_mapping")
     page_classifications: Dict[int, str] = {}
-    page_summaries_for_file: Dict[int, Dict[str, Any]] = {}
-    if page_mapping:
-        logger.info("LLM-based page classification/summaries are disabled; skipping page-level LLM calls.")
+    page_brief_summaries: Dict[int, str] = {}
+    if page_mapping and llm is not None:
+        logger.info("Generating brief per-page summaries and section-level page ranges...")
+
+        # Group original chunk content by page number
+        pages_content: Dict[int, List[str]] = {}
+        for chunk in chunks:
+            page_num = chunk.metadata.get("page_number")
+            if page_num and page_num > 0:
+                pages_content.setdefault(page_num, []).append(chunk.page_content)
+
+        total_pages_for_summary = len(pages_content)
+        for idx, (page_num, contents) in enumerate(sorted(pages_content.items()), start=1):
+            page_text = "\n\n".join(contents).strip()
+            if not page_text:
+                continue
+
+            if idx == 1 or idx % 10 == 0:
+                logger.info(f"Summarizing page {page_num}/{total_pages_for_summary}...")
+
+            summary_text = summarize_page_brief(page_num, page_text, llm)
+            page_brief_summaries[page_num] = summary_text
+
+        # Use LLM once more to group pages into logical ranges with 1–2 sentence summaries.
+        section_ranges: List[Dict[str, Any]] = []
+        if page_brief_summaries:
+            # Build compact per-page block
+            lines: List[str] = []
+            for p in sorted(page_brief_summaries.keys()):
+                lines.append(f"Page {p}: {page_brief_summaries[p]}")
+            pages_block = "\n".join(lines)
+
+            grouping_prompt = f"""You are analyzing a document that has page numbers associated with its content.
+
+You are given a very short summary for each page.
+
+Your task:
+- Identify logical sections or topic changes in the document.
+- Group consecutive pages into meaningful page ranges (e.g., 1-2, 3-4, 5-7).
+- For each page range, write a concise summary (1–2 sentences) describing what the pages in that range contain.
+- Do NOT summarize each page individually; summarize groups of pages that belong to the same topic or section.
+- Ensure page ranges are sequential and do not overlap.
+- Avoid tiny ranges unless the topic clearly changes.
+- Use only the information in the per-page summaries below.
+
+Per-page summaries:
+{pages_block}
+
+Return your answer as a JSON array ONLY, no extra text, in this exact shape:
+
+[
+  {{"start_page": 1, "end_page": 2, "summary": "Introduction to the insurance policy, explaining policy issuance, the free-look cancellation period, and how policyholders can contact the insurer."}},
+  {{"start_page": 3, "end_page": 4, "summary": "Policy schedule and nominee details including premium information, policy terms, and policyholder information."}},
+  {{"start_page": 5, "end_page": 7, "summary": "Definitions of key insurance terms used throughout the policy document."}}
+]"""
+
+            try:
+                grouping_resp = llm.invoke(grouping_prompt)
+                grouping_text = (getattr(grouping_resp, "content", None) or str(grouping_resp)).strip()
+
+                # Track approximate LLM output tokens for grouping call
+                try:
+                    out_tokens = token_tracker.count_tokens(grouping_text)
+                    token_tracker.stats["llm_output_tokens"] = token_tracker.stats.get("llm_output_tokens", 0) + out_tokens
+                except Exception:
+                    pass
+
+                # Extract first JSON array from the response
+                m = re.search(r"\[\s*{.*}\s*]", grouping_text, flags=re.DOTALL)
+                json_str = m.group(0) if m else grouping_text
+                raw_data = json.loads(json_str)
+
+                cleaned: List[Dict[str, Any]] = []
+                if isinstance(raw_data, list):
+                    for item in raw_data:
+                        try:
+                            start_page = int(item.get("start_page"))
+                            end_page = int(item.get("end_page"))
+                            summary = (item.get("summary") or "").strip()
+                        except Exception:
+                            continue
+                        if not summary or start_page <= 0 or end_page < start_page:
+                            continue
+                        cleaned.append(
+                            {
+                                "start_page": start_page,
+                                "end_page": end_page,
+                                "summary": summary,
+                            }
+                        )
+                # Fallback: if parsing failed, fall back to 1-page ranges
+                if not cleaned:
+                    for p in sorted(page_brief_summaries.keys()):
+                        cleaned.append(
+                            {
+                                "start_page": p,
+                                "end_page": p,
+                                "summary": page_brief_summaries[p],
+                            }
+                        )
+
+                cleaned.sort(key=lambda x: x["start_page"])
+                section_ranges = cleaned
+            except Exception as e:
+                logger.warning(f"Failed to group pages into sections; falling back to per-page ranges: {e}")
+                for p in sorted(page_brief_summaries.keys()):
+                    section_ranges.append(
+                        {
+                            "start_page": p,
+                            "end_page": p,
+                            "summary": page_brief_summaries[p],
+                        }
+                    )
+
+        # Persist section-level page ranges inside Plan E folder (no per-page mapping saved separately)
+        try:
+            page_summary_path = plan_e_dir / f"{doc_stem}_page_brief_summaries.json"
+            with open(page_summary_path, "w", encoding="utf-8") as f:
+                json.dump(section_ranges, f, indent=2, ensure_ascii=False)
+            logger.info(f"Section-level page summaries saved to: {page_summary_path}")
+        except Exception as e:
+            logger.warning(f"Failed to save section-level page summaries: {e}")
+    elif page_mapping and llm is None:
+        logger.warning("Page mapping available but LLM could not be initialized; skipping per-page summaries.")
+    else:
+        logger.info("Page mapping not available; skipping per-page summaries.")
     
     # Process chunks
     json_mapping = []

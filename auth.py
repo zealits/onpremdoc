@@ -23,7 +23,11 @@ pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 
 
-JWT_SECRET_KEY = os.environ.get("AUTH_JWT_SECRET", "changeme-in-production")
+JWT_SECRET_KEY = os.environ.get(
+    "AUTH_JWT_SECRET",
+    # Default is 32+ bytes to avoid InsecureKeyLengthWarning; override in .env for production
+    "changeme-in-production-but-at-least-32-bytes-long",
+)
 JWT_ALGORITHM = os.environ.get("AUTH_JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("AUTH_ACCESS_TOKEN_MINUTES", "60"))
 
@@ -38,7 +42,7 @@ class UserOut(BaseModel):
     email: EmailStr
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 
 class UserCreate(BaseModel):
