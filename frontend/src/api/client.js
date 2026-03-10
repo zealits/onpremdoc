@@ -267,3 +267,7 @@ export async function emailDocumentSummary(documentId, toEmail, subject = null) 
 export async function getEconomicsPipeline(documentId) {
   return request(`/economics/pipeline/${documentId}`)
 }
+
+export async function getDocumentPageRanges(documentId) {
+  return request(`/documents/${documentId}/page_ranges`)
+}

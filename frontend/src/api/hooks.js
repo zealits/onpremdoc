@@ -19,6 +19,7 @@ import {
   extractFromDocument,
   emailDocumentSummary,
   getEconomicsPipeline,
+  getDocumentPageRanges,
 } from './client'
 
 export const documentKeys = {
@@ -162,5 +163,17 @@ export function useEconomicsPipeline(documentId) {
     queryFn: () => getEconomicsPipeline(documentId),
     enabled: !!documentId,
     staleTime: 5 * 60 * 1000,
+  })
+}
+
+export function useDocumentPageRanges(documentId, options = {}) {
+  return useQuery({
+    queryKey: [...documentKeys.detail(documentId), 'page_ranges'],
+    queryFn: () => getDocumentPageRanges(documentId),
+    enabled: !!documentId && !!(options.enabled !== false),
+    staleTime: 5 * 60 * 1000,
+    retry: 2,
+    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 5000),
+    ...options,
   })
 }

@@ -273,6 +273,42 @@ html[data-theme='light'] .doc-toolbar-action-btn:hover {
   border-color: #9ca3af;
 }
 
+/* Document index panel */
+.index-panel-body {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(99, 102, 241, 0.4) transparent;
+}
+.index-panel-body::-webkit-scrollbar {
+  width: 6px;
+}
+.index-panel-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+.index-panel-body::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.35);
+  border-radius: 3px;
+}
+.index-panel-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(99, 102, 241, 0.5);
+}
+html[data-theme='light'] .index-card:hover {
+  border-color: rgba(99, 102, 241, 0.35);
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.08);
+}
+html[data-theme='light'] .index-section-num {
+  background-color: rgba(99, 102, 241, 0.12);
+  color: #4f46e5;
+}
+html[data-theme='light'] .index-page-badge {
+  border-color: rgba(99, 102, 241, 0.35);
+  background-color: rgba(99, 102, 241, 0.08);
+  color: #4f46e5;
+}
+html[data-theme='light'] .index-panel-refresh:hover {
+  background-color: rgba(99, 102, 241, 0.12);
+  color: #4f46e5;
+}
+
 .chat-shell {
   background-color: transparent;
   border-left-color: #1f2937;
