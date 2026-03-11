@@ -1,6 +1,6 @@
-from docling.document_converter import DocumentConverter, PdfFormatOption
-from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.document_converter import DocumentConverter, ImageFormatOption, PdfFormatOption
 from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import LayoutOptions, PdfPipelineOptions, RapidOcrOptions
 try:
     from hierarchical.postprocessor import ResultPostprocessor  # from docling-hierarchical-pdf (installed)
 except ImportError:
@@ -18,6 +18,74 @@ logger = logging.getLogger(__name__)
 
 # Suppress RapidOCR warnings about empty results (these are harmless when PDF has native text)
 logging.getLogger("RapidOCR").setLevel(logging.ERROR)
+
+# PP-OCRv5 model paths (handwriting-tuned). Used for both PDF fallback OCR and direct image conversion.
+#
+# Why image (e.g. .jpeg) OCR can look better than PDF: (1) Images are used at native
+# resolution; (2) PDF pages are rendered by the backend at a fixed scale—raising
+# images_scale in the OCR pipeline improves PDF rendering resolution so it gets closer
+# to the image case.
+_PPOCRV5_DET = r"C:\Users\Lenovo\.cache\modelscope\hub\models\RapidAI\RapidOCR\onnx\PP-OCRv5\det\ch_PP-OCRv5_server_det.onnx"
+_PPOCRV5_REC = r"C:\Users\Lenovo\.cache\modelscope\hub\models\RapidAI\RapidOCR\onnx\PP-OCRv5\rec\ch_PP-OCRv5_rec_server_infer.onnx"
+_PPOCRV4_CLS = r"C:\Users\Lenovo\.cache\modelscope\hub\models\RapidAI\RapidOCR\onnx\PP-OCRv4\cls\ch_ppocr_mobile_v2.0_cls_infer.onnx"
+
+# PDF page rendering scale for OCR (default 1.0). Higher values improve PDF text/layout quality.
+# Use 2.5 for a good balance; set to 3.0 if PDF output is still below image quality (more CPU/memory).
+OCR_IMAGES_SCALE = 3
+
+
+def get_ppocrv5_rapid_options() -> RapidOcrOptions:
+    """
+    RapidOCR options with PP-OCRv5 server models for better handwriting recognition.
+
+    If the PP-OCRv5 / v4 ONNX model files are missing, this **gracefully falls back**
+    to RapidOCR's built-in default models (no custom det/rec/cls paths), so the
+    pipeline still runs instead of crashing.
+    """
+    det_path = Path(_PPOCRV5_DET)
+    rec_path = Path(_PPOCRV5_REC)
+    cls_path = Path(_PPOCRV4_CLS)
+
+    if not (det_path.exists() and rec_path.exists() and cls_path.exists()):
+        logger.warning(
+            "PP-OCRv5 model files not found; falling back to RapidOCR default models "
+            "(no custom det/rec/cls paths)."
+        )
+        return RapidOcrOptions(
+            backend="onnxruntime",
+            lang=["english"],
+            force_full_page_ocr=True,
+            bitmap_area_threshold=0.0,
+            text_score=0.4,
+        )
+
+    return RapidOcrOptions(
+        backend="onnxruntime",
+        lang=["english"],
+        force_full_page_ocr=True,
+        bitmap_area_threshold=0.0,
+        text_score=0.4,
+        det_model_path=_PPOCRV5_DET,
+        rec_model_path=_PPOCRV5_REC,
+        cls_model_path=_PPOCRV4_CLS,
+    )
+
+
+def get_ocr_pipeline_options_with_ppocrv5() -> PdfPipelineOptions:
+    """
+    Pipeline options with OCR enabled using PP-OCRv5 (for images and PDF fallback).
+    - Resolution: uses OCR_IMAGES_SCALE so PDF pages are rendered at higher resolution
+      for OCR, improving accuracy vs default 1.0 (try 3.0 if PDF quality is still below image).
+    - Reading order: layout_options with create_orphan_clusters=True so stray blocks get
+      proper clusters and export order is more consistent.
+    """
+    return PdfPipelineOptions(
+        do_ocr=True,
+        ocr_options=get_ppocrv5_rapid_options(),
+        images_scale=OCR_IMAGES_SCALE,
+        layout_options=LayoutOptions(create_orphan_clusters=True),
+    )
+
 
 # ---------------- MARKDOWN FIXING HELPERS ----------------
 def normalize(text: str) -> str:
@@ -87,11 +155,12 @@ def is_separator_row(row):
     """
     if not row:
         return False
-    # Check if all cells are mostly dashes or empty
+    # Check if all cells are mostly dashes or empty. Normalize each cell once
+    # to avoid repeated regex and strip work in tight loops.
+    normalized_cells = [normalize(cell) for cell in row]
     dash_count = 0
     total_chars = 0
-    for cell in row:
-        cell_text = normalize(cell)
+    for cell_text in normalized_cells:
         if cell_text:
             total_chars += len(cell_text)
             dash_count += cell_text.count("-")
@@ -486,19 +555,21 @@ def process_single_pdf(pdf_path: Path, base_output_dir: Path, target_dir: Option
     confidence_path = doc_output_dir / f"{input_stem}_confidence.json"
 
     logger.info("Initializing Docling converter")
-    
-    # First pass: prefer native text extraction and avoid unnecessary OCR.
-    # For most digital PDFs (like policy documents) this is faster and more accurate.
-    pipeline_options = PdfPipelineOptions()
-    pipeline_options.do_ocr = False  # First try without OCR
-    
-    converter = DocumentConverter(
-        format_options={
-            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
-        }
+
+    # First pass for PDFs: prefer native text extraction (no OCR).
+    # For images: always use PP-OCRv5 pipeline (images need OCR).
+    pipeline_options_pdf = PdfPipelineOptions(
+        do_ocr=False,  # First try without OCR
+        layout_options=LayoutOptions(create_orphan_clusters=True),  # consistent reading order
     )
-    
-    logger.info("✓ First pass configured to use native text extraction (OCR disabled)")
+
+    format_options = {
+        InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options_pdf),
+        InputFormat.IMAGE: ImageFormatOption(pipeline_options=get_ocr_pipeline_options_with_ppocrv5()),
+    }
+    converter = DocumentConverter(format_options=format_options)
+
+    logger.info("✓ PDF: native text first pass; IMAGE: PP-OCRv5 (handwriting-tuned)")
 
     logger.info(f"Converting document: {pdf_path.name}")
     doc = converter.convert(str(pdf_path))
@@ -635,23 +706,21 @@ def process_single_pdf(pdf_path: Path, base_output_dir: Path, target_dir: Option
     # First export attempt (no OCR)
     markdown = export_markdown_with_page_breaks(doc)
 
-    # If we only got image placeholders / page breaks, rerun conversion with OCR enabled
+    # If we only got image placeholders / page breaks, rerun conversion with RapidOCR
+    # configured for stronger handwriting performance.
     if markdown and is_image_only_markdown(markdown):
         logger.warning(
             "Markdown appears to contain only image placeholders/page breaks. "
-            "Re-running conversion with OCR enabled for better extraction..."
+            "Re-running conversion with RapidOCR (handwriting-tuned) for better extraction..."
         )
-
-        ocr_pipeline_options = PdfPipelineOptions()
-        ocr_pipeline_options.do_ocr = True
 
         ocr_converter = DocumentConverter(
             format_options={
-                InputFormat.PDF: PdfFormatOption(pipeline_options=ocr_pipeline_options)
+                InputFormat.PDF: PdfFormatOption(pipeline_options=get_ocr_pipeline_options_with_ppocrv5())
             }
         )
 
-        logger.info("Re-converting document with OCR enabled")
+        logger.info("Re-converting document with RapidOCR (handwriting-tuned) enabled")
         doc = ocr_converter.convert(str(pdf_path))
 
         # Apply hierarchical postprocessor to OCR doc so heading levels (#, ##, etc.) are preserved
@@ -659,12 +728,12 @@ def process_single_pdf(pdf_path: Path, base_output_dir: Path, target_dir: Option
         try:
             ResultPostprocessor(doc, source=str(pdf_path)).process()
             logger.info("✓ Applied hierarchical postprocessor to OCR result")
-        except Exception as e:
-            logger.warning(f"Hierarchical postprocessor failed on OCR doc: {e}")
+        except Exception as e2:
+            logger.warning(f"Hierarchical postprocessor failed on OCR doc: {e2}")
             try:
                 ResultPostprocessor(doc).process()
-            except Exception as e2:
-                logger.warning(f"Hierarchical postprocessor failed even without source: {e2}")
+            except Exception as e3:
+                logger.warning(f"Hierarchical postprocessor failed even without source: {e3}")
 
         markdown = export_markdown_with_page_breaks(doc)
 

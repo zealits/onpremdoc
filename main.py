@@ -230,6 +230,7 @@ class PageSummaryResponse(BaseModel):
 
 class PageRangeSummary(BaseModel):
     """Section-level summary over a page range (start_page–end_page)."""
+    title: str = Field("", description="Short section title for this page range")
     start_page: int = Field(..., description="First page in the range")
     end_page: int = Field(..., description="Last page in the range (inclusive)")
     summary: str = Field(..., description="1–2 sentence summary of what this page range contains")
@@ -599,6 +600,7 @@ async def get_page_ranges(
 
     Data comes from the Plan E file *_page_brief_summaries.json produced
     during vectorization, where each entry has:
+      - title (optional short section title)
       - start_page
       - end_page
       - summary

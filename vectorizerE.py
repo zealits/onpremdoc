@@ -71,8 +71,19 @@ EMBEDDING_MAX_CHARS = 2000
 CHUNK_SIZE = EMBEDDING_MAX_CHARS
 CHUNK_OVERLAP = 150
 
+# Adaptive chunking targets
+# Aim for at least MIN_CHUNKS chunks per document, with a minimum
+# chunk size of MIN_CHUNK_CHARS characters for very short docs.
+MIN_CHUNKS = 8
+MIN_CHUNK_CHARS = 300
+
 # Token counting encoding
 TOKEN_ENCODING = "cl100k_base" if TIKTOKEN_AVAILABLE else None
+
+# Toggle for building similarity edges between chunks. When set to False,
+# the vectorization pipeline will skip the expensive similarity graph
+# construction and no 'similar_to' edges will be added to the document graph.
+ENABLE_SIMILARITY_EDGES = False
 
 # ---------------- TOKEN TRACKING ---------------- 
 class TokenTracker:
@@ -585,6 +596,19 @@ def get_section_for_line(line_number: int, structure: Dict[str, Any]) -> Optiona
     return most_specific
 
 # ---------------- ENHANCED CHUNKING ---------------- 
+def compute_effective_chunk_size(total_chars: int) -> int:
+    """
+    Adaptive chunk size by document length.
+    Short docs get smaller chunks (more granular retrieval);
+    long docs use fixed max CHUNK_SIZE to avoid too many chunks.
+    """
+    effective = min(
+        CHUNK_SIZE,
+        max(MIN_CHUNK_CHARS, total_chars // MIN_CHUNKS),
+    )
+    return effective
+
+
 def is_chunk_empty(chunk: Document) -> bool:
     """Check if a chunk is empty or has minimal content (only headers, whitespace, etc.)"""
     content = chunk.page_content.strip()
@@ -629,6 +653,17 @@ def parse_markdown_enhanced(markdown_content: str, page_mapping: Optional[Dict[s
         level_summary = ", ".join([f"Level {k}: {v}" for k, v in sorted(level_counts.items())])
         logger.info(f"Heading level distribution: {level_summary}")
     
+    # Decide effective chunk size adaptively based on total document length
+    total_chars = len(markdown_content)
+    effective_chunk_size = compute_effective_chunk_size(total_chars)
+    if effective_chunk_size != CHUNK_SIZE:
+        logger.info(
+            "Adaptive chunking: doc has %d chars, using effective_chunk_size=%d (target min %d chunks)",
+            total_chars,
+            effective_chunk_size,
+            MIN_CHUNKS,
+        )
+    
     # Load page mapping if provided
     line_to_page = None
     if page_mapping:
@@ -658,7 +693,7 @@ def parse_markdown_enhanced(markdown_content: str, page_mapping: Optional[Dict[s
         line_with_newline = line + "\n"
         line_size = len(line_with_newline)
         
-        if current_chunk_size + line_size > CHUNK_SIZE and current_chunk_lines:
+        if current_chunk_size + line_size > effective_chunk_size and current_chunk_lines:
             chunk_text = "".join(current_chunk_lines)
             chunk_start_line = line_num - len(current_chunk_lines)
             
@@ -720,47 +755,51 @@ def parse_markdown_enhanced(markdown_content: str, page_mapping: Optional[Dict[s
         )
         chunks.append(chunk)
     
-    # Filter out empty chunks and duplicate chunks before adding adjacency metadata
-    filtered_chunks = []
-    seen_content_hashes = set()  # Track content to avoid duplicates
+    # Filter out empty chunks and duplicate chunks before adding adjacency metadata.
+    # Duplicate detection uses a Jaccard similarity ≥ 0.90 over the first ~1500
+    # normalized characters; we keep the same logic but cache previews/word-sets
+    # to avoid rebuilding them for every comparison.
+    filtered_chunks: List[Document] = []
+    seen_previews: List[str] = []          # truncated normalized previews
+    seen_word_sets: List[set] = []         # word sets for each preview
     
     for chunk in chunks:
         if is_chunk_empty(chunk):
             logger.debug(f"Skipping empty chunk: {chunk.metadata.get('heading', 'Unknown')}")
             continue
         
-        # Check for duplicate/similar content (90%+ overlap)
-        # Normalize: remove extra whitespace for comparison
+        # Normalize and truncate once for this chunk
         content_normalized = " ".join(chunk.page_content.split())
+        current_preview = content_normalized[:1500]
+        current_words = set(current_preview.split()) if current_preview else set()
         
         # Check against all previously seen chunks for high similarity
         is_duplicate = False
-        for seen_content in seen_content_hashes:
-            # Compare first 1500 chars (catches most of chunk content)
-            current_preview = content_normalized[:1500]
-            seen_preview = seen_content[:1500]
-            
-            # Calculate word-based similarity (Jaccard similarity)
-            current_words = set(current_preview.split())
-            seen_words = set(seen_preview.split())
-            
-            if len(current_words) > 0 and len(seen_words) > 0:
+        if current_words:
+            for seen_preview, seen_words in zip(seen_previews, seen_word_sets):
+                if not seen_words:
+                    continue
                 # Jaccard similarity: intersection over union
-                intersection = len(current_words & seen_words)
-                union = len(current_words | seen_words)
-                similarity = intersection / union if union > 0 else 0.0
+                intersection_size = len(current_words & seen_words)
+                union_size = len(current_words | seen_words)
+                similarity = intersection_size / union_size if union_size > 0 else 0.0
                 
                 # If 90%+ similar, consider it a duplicate
                 if similarity >= 0.90:
-                    logger.debug(f"Skipping duplicate chunk (similarity: {similarity:.1%}): {chunk.metadata.get('heading', 'Unknown')} (start_line: {chunk.metadata.get('start_line')})")
+                    logger.debug(
+                        f"Skipping duplicate chunk (similarity: {similarity:.1%}): "
+                        f"{chunk.metadata.get('heading', 'Unknown')} "
+                        f"(start_line: {chunk.metadata.get('start_line')})"
+                    )
                     is_duplicate = True
                     break
         
         if is_duplicate:
             continue
         
-        # Store normalized content for future comparisons
-        seen_content_hashes.add(content_normalized)
+        # Store preview and word set for future comparisons
+        seen_previews.append(current_preview)
+        seen_word_sets.append(current_words)
         filtered_chunks.append(chunk)
     
     # Update chunk indices after filtering
@@ -1577,7 +1616,8 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
             summary_text = summarize_page_brief(page_num, page_text, llm)
             page_brief_summaries[page_num] = summary_text
 
-        # Use LLM once more to group pages into logical ranges with 1–2 sentence summaries.
+        # Use LLM once more to group pages into logical ranges with 1–2 sentence summaries
+        # and assign a short section title for each range.
         section_ranges: List[Dict[str, Any]] = []
         if page_brief_summaries:
             # Build compact per-page block
@@ -1593,6 +1633,7 @@ You are given a very short summary for each page.
 Your task:
 - Identify logical sections or topic changes in the document.
 - Group consecutive pages into meaningful page ranges (e.g., 1-2, 3-4, 5-7).
+- For each page range, choose a SHORT TITLE (3–8 words) that describes that section.
 - For each page range, write a concise summary (1–2 sentences) describing what the pages in that range contain.
 - Do NOT summarize each page individually; summarize groups of pages that belong to the same topic or section.
 - Ensure page ranges are sequential and do not overlap.
@@ -1605,9 +1646,9 @@ Per-page summaries:
 Return your answer as a JSON array ONLY, no extra text, in this exact shape:
 
 [
-  {{"start_page": 1, "end_page": 2, "summary": "Introduction to the insurance policy, explaining policy issuance, the free-look cancellation period, and how policyholders can contact the insurer."}},
-  {{"start_page": 3, "end_page": 4, "summary": "Policy schedule and nominee details including premium information, policy terms, and policyholder information."}},
-  {{"start_page": 5, "end_page": 7, "summary": "Definitions of key insurance terms used throughout the policy document."}}
+  {{"title": "Introduction & overview", "start_page": 1, "end_page": 2, "summary": "Introduction to the insurance policy, explaining policy issuance, the free-look cancellation period, and how policyholders can contact the insurer."}},
+  {{"title": "Policy schedule and nominee details", "start_page": 3, "end_page": 4, "summary": "Policy schedule and nominee details including premium information, policy terms, and policyholder information."}},
+  {{"title": "Definitions and key terms", "start_page": 5, "end_page": 7, "summary": "Definitions of key insurance terms used throughout the policy document."}}
 ]"""
 
             try:
@@ -1639,6 +1680,7 @@ Return your answer as a JSON array ONLY, no extra text, in this exact shape:
                             continue
                         cleaned.append(
                             {
+                                "title": (item.get("title") or "").strip(),
                                 "start_page": start_page,
                                 "end_page": end_page,
                                 "summary": summary,
@@ -1649,6 +1691,7 @@ Return your answer as a JSON array ONLY, no extra text, in this exact shape:
                     for p in sorted(page_brief_summaries.keys()):
                         cleaned.append(
                             {
+                                "title": "",
                                 "start_page": p,
                                 "end_page": p,
                                 "summary": page_brief_summaries[p],
@@ -1662,6 +1705,7 @@ Return your answer as a JSON array ONLY, no extra text, in this exact shape:
                 for p in sorted(page_brief_summaries.keys()):
                     section_ranges.append(
                         {
+                            "title": "",
                             "start_page": p,
                             "end_page": p,
                             "summary": page_brief_summaries[p],
@@ -1682,8 +1726,9 @@ Return your answer as a JSON array ONLY, no extra text, in this exact shape:
         logger.info("Page mapping not available; skipping per-page summaries.")
     
     # Process chunks
-    json_mapping = []
-    processed_chunks = []
+    json_mapping: List[Dict[str, Any]] = []
+    processed_chunks: List[Dict[str, Any]] = []
+    docs_for_chroma: List[Document] = []
     
     logger.info(f"Processing {len(chunks)} chunks with graph structure...")
     
@@ -1764,24 +1809,14 @@ Return your answer as a JSON array ONLY, no extra text, in this exact shape:
             content = content[:int(EMBEDDING_MAX_CHARS * 0.8)] + "..."
             was_truncated = True
         
-        # Create document for vector store
+        # Create document for vector store; actual insertion is batched after
+        # all chunks are processed, with a safe fallback to per-document
+        # insertion on error to preserve behavior in rare failure cases.
         doc = Document(
             page_content=content,
             metadata=chroma_metadata
         )
-        
-        # Add to vector store
-        try:
-            vector_store.add_documents([doc])
-        except Exception as e:
-            logger.error("Failed to add chunk %s: %s", vector_number, e)
-            content = content[:int(EMBEDDING_MAX_CHARS * 0.5)] + "..."
-            doc.page_content = content
-            try:
-                vector_store.add_documents([doc])
-            except Exception as e2:
-                logger.error("Still failed, skipping chunk %s: %s", vector_number, e2)
-                continue
+        docs_for_chroma.append(doc)
         
         # Add chunk node to graph
         chunk_node = document_graph.add_chunk_node(vector_number, doc)
@@ -1835,142 +1870,173 @@ Return your answer as a JSON array ONLY, no extra text, in this exact shape:
         processed_chunks.append(chunk_detail)
         token_tracker.stats["total_chunks"] += 1
     
-    # Compute similarity edges between chunks (rank-based: top-K per chunk, embedding-model agnostic)
-    logger.info("Computing similarity edges between chunks...")
-    max_similar_per_chunk = 5  # Connect each chunk to its K nearest neighbors (by distance)
-    min_similarity_for_edge = 0.5  # Only add edge if relative similarity > this (avoid weak/0.00 links)
-    
-    similarity_edges_added = 0
-    all_chunk_ids = sorted(document_graph.chunk_nodes.keys())
-    
-    # Debug: track distance ranges across chunks (for logging only)
-    distance_samples = []
-    
-    for i, chunk_id in enumerate(all_chunk_ids):
-        if (i + 1) % 50 == 0:
-            logger.info(f"  Computing similarities for chunk {i + 1}/{len(all_chunk_ids)}...")
-        
-        chunk_node = document_graph.chunk_nodes.get(chunk_id)
-        if not chunk_node:
-            continue
-        
-        # Get the chunk content from vector store
+    # Batch-insert all documents into the vector store. If the batch insert
+    # fails for any reason (e.g., backend-specific limits), fall back to the
+    # original per-document insertion behavior with truncation retries to
+    # preserve robustness.
+    if docs_for_chroma:
         try:
-            # Use the chunk's content to find similar chunks
-            chunk_doc = None
-            for chunk_detail in processed_chunks:
-                if chunk_detail.get("vector_number") == chunk_id:
-                    raw_content = chunk_detail.get("content", "")
-                    content_str = "\n".join(raw_content) if isinstance(raw_content, list) else raw_content
-                    chunk_doc = Document(
-                        page_content=content_str,
-                        metadata=chunk_detail.get("metadata", {})
-                    )
-                    break
-            
-            if not chunk_doc or not chunk_doc.page_content.strip():
-                continue
-
-            # Account for embedding tokens used by similarity search queries.
-            # Chroma will embed the query text once per search, so we approximate
-            # cost here for economics tracking.
-            try:
-                query_tokens = token_tracker.count_tokens(chunk_doc.page_content)
-                token_tracker.stats["embedding_tokens"] += query_tokens
-            except Exception:
-                pass
-
-            # Find similar chunks using vector similarity search
-            # Search for more than we need to account for the chunk itself
-            similar_results = vector_store.similarity_search_with_score(
-                chunk_doc.page_content,
-                k=max_similar_per_chunk + 3
-            )
-            
-            if not similar_results:
-                if i < 3:  # Debug for first few
-                    logger.warning(f"  No results for chunk {chunk_id}")
-                continue
-            
-            if i < 3:  # Debug for first few
-                logger.info(f"  Chunk {chunk_id}: Found {len(similar_results)} search results")
-            
-            # Collect valid candidates: (chunk_id, distance, node); skip self, None, not in graph
-            skipped_same = 0
-            skipped_none = 0
-            skipped_not_in_graph = 0
-            candidates = []
-            for similar_doc, distance_score in similar_results:
-                similar_chunk_id = similar_doc.metadata.get("chunk_index")
-                if similar_chunk_id is None:
-                    skipped_none += 1
-                    continue
-                if similar_chunk_id == chunk_id:
-                    skipped_same += 1
-                    continue
-                if similar_chunk_id not in document_graph.chunk_nodes:
-                    skipped_not_in_graph += 1
-                    continue
-                similar_node = document_graph.chunk_nodes.get(similar_chunk_id)
-                if similar_node:
-                    candidates.append((similar_chunk_id, distance_score, similar_node))
-            
-            # Rank-based: take top max_similar_per_chunk by distance (lowest = most similar)
-            candidates.sort(key=lambda x: x[1])
-            top = candidates[:max_similar_per_chunk]
-            
-            if i < 3:
-                logger.info(f"  Chunk {chunk_id}: {len(similar_results)} results, skipped: same={skipped_same}, none={skipped_none}, not_in_graph={skipped_not_in_graph}, top-K={len(top)}")
-            
-            # Relative similarity for edge weight: 1.0 = nearest, 0.0 = farthest in this top-K (embedding-model agnostic)
-            d_min = top[0][1] if top else 0.0
-            d_max = top[-1][1] if top else 0.0
-            span = (d_max - d_min) + 1e-9
-            
-            for rank, (similar_chunk_id, distance_score, similar_node) in enumerate(top):
-                # Relative similarity in [0, 1]: best=1.0, worst in top-K=0.0
-                similarity = 1.0 - (distance_score - d_min) / span
-                similarity = max(0.0, min(1.0, similarity))
-                
-                if len(distance_samples) < 20:
-                    distance_samples.append((distance_score, similarity))
-                if i < 3 and rank < 2:
-                    logger.info(f"  Chunk {chunk_id} -> {similar_chunk_id}: distance={distance_score:.4f}, rel_similarity={similarity:.4f} (rank {rank+1}/{len(top)})")
-                
-                # Only add edge if relative similarity is above minimum (skip 0.00 or weak links)
-                if similarity <= min_similarity_for_edge:
-                    continue
-                # Skip if already connected via "follows"
-                existing_edge_1 = document_graph.graph.get_edge_data(chunk_node, similar_node)
-                existing_edge_2 = document_graph.graph.get_edge_data(similar_node, chunk_node)
-                has_follows = (existing_edge_1 and existing_edge_1.get("relation") == "follows") or \
-                              (existing_edge_2 and existing_edge_2.get("relation") == "follows")
-                if has_follows:
-                    continue
-                if (existing_edge_1 and existing_edge_1.get("relation") == "similar_to") or \
-                   (existing_edge_2 and existing_edge_2.get("relation") == "similar_to"):
-                    continue
-                
-                document_graph.add_edge(
-                    chunk_node,
-                    similar_node,
-                    relation="similar_to",
-                    similarity=similarity
-                )
-                similarity_edges_added += 1
-                
+            vector_store.add_documents(docs_for_chroma)
         except Exception as e:
-            logger.warning(f"Error computing similarity for chunk {chunk_id}: {e}", exc_info=True)
-            continue
+            logger.error("Batch add_documents failed (%s); falling back to per-document insertion", e)
+            for doc in docs_for_chroma:
+                try:
+                    vector_store.add_documents([doc])
+                except Exception as e1:
+                    logger.error("Failed to add document in fallback path: %s", e1)
+                    # Match the original behavior: try again with a more
+                    # aggressively truncated page_content.
+                    try:
+                        truncated = doc.page_content[:int(EMBEDDING_MAX_CHARS * 0.5)] + "..."
+                        doc.page_content = truncated
+                        vector_store.add_documents([doc])
+                    except Exception as e2:
+                        logger.error("Still failed, skipping document in fallback path: %s", e2)
+                        continue
     
-    # Log distance statistics for debugging (sample across chunks; scale is embedding-model dependent)
-    if distance_samples:
-        distances = [d[0] for d in distance_samples]
-        rel_sims = [d[1] for d in distance_samples]
-        logger.info(f"Distance sample (model-dependent): min={min(distances):.4f}, max={max(distances):.4f}, avg={sum(distances)/len(distances):.4f}")
-        logger.info(f"Relative similarity (rank-based): min={min(rel_sims):.4f}, max={max(rel_sims):.4f}, avg={sum(rel_sims)/len(rel_sims):.4f}")
-    
-    logger.info(f"Added {similarity_edges_added} similarity edges between chunks")
+    if ENABLE_SIMILARITY_EDGES:
+        # Prebuild documents for similarity search keyed by vector_number to avoid
+        # reconstructing them inside the main similarity loop.
+        docs_by_vector_number: Dict[int, Document] = {}
+        for chunk_detail in processed_chunks:
+            try:
+                vnum = int(chunk_detail.get("vector_number"))
+            except (TypeError, ValueError):
+                continue
+            raw_content = chunk_detail.get("content", "")
+            content_str = "\n".join(raw_content) if isinstance(raw_content, list) else raw_content
+            docs_by_vector_number[vnum] = Document(
+                page_content=content_str,
+                metadata=chunk_detail.get("metadata", {}),
+            )
+        
+        # Compute similarity edges between chunks (rank-based: top-K per chunk, embedding-model agnostic)
+        logger.info("Computing similarity edges between chunks...")
+        max_similar_per_chunk = 5  # Connect each chunk to its K nearest neighbors (by distance)
+        min_similarity_for_edge = 0.5  # Only add edge if relative similarity > this (avoid weak/0.00 links)
+        
+        similarity_edges_added = 0
+        all_chunk_ids = sorted(document_graph.chunk_nodes.keys())
+        
+        # Debug: track distance ranges across chunks (for logging only)
+        distance_samples = []
+        
+        for i, chunk_id in enumerate(all_chunk_ids):
+            if (i + 1) % 50 == 0:
+                logger.info(f"  Computing similarities for chunk {i + 1}/{len(all_chunk_ids)}...")
+            
+            chunk_node = document_graph.chunk_nodes.get(chunk_id)
+            if not chunk_node:
+                continue
+            
+            # Get the prebuilt document for this chunk
+            try:
+                chunk_doc = docs_by_vector_number.get(chunk_id)
+                if not chunk_doc or not chunk_doc.page_content.strip():
+                    continue
+
+                # Account for embedding tokens used by similarity search queries.
+                # Chroma will embed the query text once per search, so we approximate
+                # cost here for economics tracking.
+                try:
+                    query_tokens = token_tracker.count_tokens(chunk_doc.page_content)
+                    token_tracker.stats["embedding_tokens"] += query_tokens
+                except Exception:
+                    pass
+
+                # Find similar chunks using vector similarity search
+                # Search for more than we need to account for the chunk itself
+                similar_results = vector_store.similarity_search_with_score(
+                    chunk_doc.page_content,
+                    k=max_similar_per_chunk + 3
+                )
+                
+                if not similar_results:
+                    if i < 3:  # Debug for first few
+                        logger.warning(f"  No results for chunk {chunk_id}")
+                    continue
+                
+                if i < 3:  # Debug for first few
+                    logger.info(f"  Chunk {chunk_id}: Found {len(similar_results)} search results")
+                
+                # Collect valid candidates: (chunk_id, distance, node); skip self, None, not in graph
+                skipped_same = 0
+                skipped_none = 0
+                skipped_not_in_graph = 0
+                candidates = []
+                for similar_doc, distance_score in similar_results:
+                    similar_chunk_id = similar_doc.metadata.get("chunk_index")
+                    if similar_chunk_id is None:
+                        skipped_none += 1
+                        continue
+                    if similar_chunk_id == chunk_id:
+                        skipped_same += 1
+                        continue
+                    if similar_chunk_id not in document_graph.chunk_nodes:
+                        skipped_not_in_graph += 1
+                        continue
+                    similar_node = document_graph.chunk_nodes.get(similar_chunk_id)
+                    if similar_node:
+                        candidates.append((similar_chunk_id, distance_score, similar_node))
+                
+                # Rank-based: take top max_similar_per_chunk by distance (lowest = most similar)
+                candidates.sort(key=lambda x: x[1])
+                top = candidates[:max_similar_per_chunk]
+                
+                if i < 3:
+                    logger.info(f"  Chunk {chunk_id}: {len(similar_results)} results, skipped: same={skipped_same}, none={skipped_none}, not_in_graph={skipped_not_in_graph}, top-K={len(top)}")
+                
+                # Relative similarity for edge weight: 1.0 = nearest, 0.0 = farthest in this top-K (embedding-model agnostic)
+                d_min = top[0][1] if top else 0.0
+                d_max = top[-1][1] if top else 0.0
+                span = (d_max - d_min) + 1e-9
+                
+                for rank, (similar_chunk_id, distance_score, similar_node) in enumerate(top):
+                    # Relative similarity in [0, 1]: best=1.0, worst in top-K=0.0
+                    similarity = 1.0 - (distance_score - d_min) / span
+                    similarity = max(0.0, min(1.0, similarity))
+                    
+                    if len(distance_samples) < 20:
+                        distance_samples.append((distance_score, similarity))
+                    if i < 3 and rank < 2:
+                        logger.info(f"  Chunk {chunk_id} -> {similar_chunk_id}: distance={distance_score:.4f}, rel_similarity={similarity:.4f} (rank {rank+1}/{len(top)})")
+                    
+                    # Only add edge if relative similarity is above minimum (skip 0.00 or weak links)
+                    if similarity <= min_similarity_for_edge:
+                        continue
+                    # Skip if already connected via "follows"
+                    existing_edge_1 = document_graph.graph.get_edge_data(chunk_node, similar_node)
+                    existing_edge_2 = document_graph.graph.get_edge_data(similar_node, chunk_node)
+                    has_follows = (existing_edge_1 and existing_edge_1.get("relation") == "follows") or \
+                                  (existing_edge_2 and existing_edge_2.get("relation") == "follows")
+                    if has_follows:
+                        continue
+                    if (existing_edge_1 and existing_edge_1.get("relation") == "similar_to") or \
+                       (existing_edge_2 and existing_edge_2.get("relation") == "similar_to"):
+                        continue
+                    
+                    document_graph.add_edge(
+                        chunk_node,
+                        similar_node,
+                        relation="similar_to",
+                        similarity=similarity
+                    )
+                    similarity_edges_added += 1
+                    
+            except Exception as e:
+                logger.warning(f"Error computing similarity for chunk {chunk_id}: {e}", exc_info=True)
+                continue
+        
+        # Log distance statistics for debugging (sample across chunks; scale is embedding-model dependent)
+        if distance_samples:
+            distances = [d[0] for d in distance_samples]
+            rel_sims = [d[1] for d in distance_samples]
+            logger.info(f"Distance sample (model-dependent): min={min(distances):.4f}, max={max(distances):.4f}, avg={sum(distances)/len(distances):.4f}")
+            logger.info(f"Relative similarity (rank-based): min={min(rel_sims):.4f}, max={max(rel_sims):.4f}, avg={sum(rel_sims)/len(rel_sims):.4f}")
+        
+        logger.info(f"Added {similarity_edges_added} similarity edges between chunks")
+    else:
+        logger.info("Similarity edges between chunks are disabled (ENABLE_SIMILARITY_EDGES=False); skipping similarity graph construction.")
     
     # Save files
     with open(json_output_path, 'w', encoding='utf-8') as f:

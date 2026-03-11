@@ -881,7 +881,7 @@ def get_page_brief_summaries(document_id: str) -> List[Dict[str, Any]]:
     except Exception as e:
         raise ValueError(f"Failed to read page brief summaries: {e}") from e
 
-    # Normalise to list of dicts with start_page, end_page, summary
+    # Normalise to list of dicts with title, start_page, end_page, summary
     out: List[Dict[str, Any]] = []
     if isinstance(data, list):
         for item in data:
@@ -890,6 +890,7 @@ def get_page_brief_summaries(document_id: str) -> List[Dict[str, Any]]:
             start_page = item.get("start_page")
             end_page = item.get("end_page")
             summary = (item.get("summary") or "").strip()
+            title = (item.get("title") or "").strip()
             if start_page is None or end_page is None or not summary:
                 continue
             try:
@@ -899,7 +900,7 @@ def get_page_brief_summaries(document_id: str) -> List[Dict[str, Any]]:
                 continue
             if sp <= 0 or ep < sp:
                 continue
-            out.append({"start_page": sp, "end_page": ep, "summary": summary})
+            out.append({"title": title, "start_page": sp, "end_page": ep, "summary": summary})
     else:
         # Backwards-compatibility: if an older dict format is ever passed through,
         # just return empty rather than raising.
