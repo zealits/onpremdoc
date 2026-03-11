@@ -364,6 +364,9 @@ function ChatPanel({
             msg.next_questions = chunk.next_questions || [];
             msg.is_page_summary = chunk.is_page_summary === true;
             msg.page_number = chunk.page_number;
+          } else if (chunk.type === "next_questions") {
+            // Final chunk containing suggested follow-up questions once the answer is complete
+            msg.next_questions = chunk.next_questions || [];
           } else if (chunk.type === "answer_chunk") {
             msg.content = (msg.content || "") + (chunk.delta || "");
           } else if (chunk.type === "error") {
@@ -502,18 +505,46 @@ function ChatPanel({
                       {msg.content}
                     </ReactMarkdown>
                     {(msg.next_questions?.length ?? 0) > 0 && (
-                      <div className="mt-3 pt-2 border-t chat-assistant-divider">
-                        <p className="text-xs font-medium chat-assistant-muted mb-2">Suggested follow-up questions</p>
-                        <div className="flex flex-wrap gap-2">
+                      <div className="mt-4 pt-3 border-t chat-assistant-divider">
+                        <div className="flex items-center gap-2 mb-3">
+                          <div className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-indigo-500/10 text-indigo-500">
+                            <svg
+                              className="h-3.5 w-3.5"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              xmlns="http://www.w3.org/2000/svg"
+                            >
+                              <path
+                                d="M12 3L4 9V21H10V15H14V21H20V9L12 3Z"
+                                stroke="currentColor"
+                                strokeWidth="1.6"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </svg>
+                          </div>
+                          <div>
+                            <p className="text-xs font-semibold uppercase tracking-wide text-indigo-700 dark:text-indigo-400">
+                              Suggested follow-up questions
+                            </p>
+                            <p className="text-[11px] leading-snug theme-sidebar-muted">
+                              Jump into a deeper, more focused analysis.
+                            </p>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                           {msg.next_questions.map((question, j) => (
                             <button
                               key={j}
                               type="button"
                               onClick={() => send(question)}
-                              className="px-3 py-1.5 rounded-full border border-indigo-200 bg-indigo-50 text-indigo-700 text-xs sm:text-sm hover:bg-indigo-100 hover:border-indigo-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="group flex w-full items-start gap-2 rounded-xl border border-indigo-200 bg-white/80 px-3 py-2 text-left text-xs sm:text-sm text-slate-800 hover:bg-indigo-50 hover:border-indigo-400/70 dark:border-indigo-500/20 dark:bg-indigo-500/5 dark:text-indigo-50 dark:hover:bg-indigo-500/15 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
                               disabled={isStreaming}
                             >
-                              {question}
+                              <span className="mt-1 h-1.5 w-1.5 rounded-full bg-indigo-400 group-hover:bg-indigo-500 dark:group-hover:bg-indigo-300 flex-shrink-0" />
+                              <span className="whitespace-normal break-words leading-snug">
+                                {question}
+                              </span>
                             </button>
                           ))}
                         </div>
