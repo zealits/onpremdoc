@@ -122,3 +122,21 @@ standalone commands to check standalone files
 1)python detection.py .\HDFC-Life-Cancer-Care-101N106V04-Policy-Document.pdf
 2)python .\vectorizerE.py .\output\HDFC-Life-Cancer-Care-101N106V04-Policy-Document
 3)python .\visualizeGraphE.py .\output\HDFC-Life-Cancer-Care-101N106V04-Policy-Document\
+
+
+
+.venv/scripts/activate
+python -m uvicorn main:app --port 8000
+
+
+for paddle
+python -c "import os; from modelscope import snapshot_download; \
+>> print('Downloading RapidOCR models (includes PP-OCRv5)...'); \
+>> dp = snapshot_download(repo_id='RapidAI/RapidOCR'); \
+>> print('Models downloaded to:', dp); \
+>> det = os.path.join(dp, 'onnx', 'PP-OCRv5', 'det', 'ch_PP-OCRv5_server_det.onnx'); \
+>> rec = os.path.join(dp, 'onnx', 'PP-OCRv5', 'rec', 'ch_PP-OCRv5_rec_server_infer.onnx'); \
+>> cls = os.path.join(dp, 'onnx', 'PP-OCRv4', 'cls', 'ch_ppocr_mobile_v2.0_cls_infer.onnx'); \
+>> print('DET:', det); print('REC:', rec); print('CLS:', cls)"
+
+
