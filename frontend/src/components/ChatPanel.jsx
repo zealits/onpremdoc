@@ -296,7 +296,21 @@ function ChatPanel({
   }, [documentId, messages]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const el = bottomRef.current;
+    if (!el) return;
+    // Prefer scrolling only the chat column, not the whole page
+    const scrollContainer =
+      el.closest(".column-scroll") ||
+      el.parentElement;
+    if (scrollContainer && "scrollTo" in scrollContainer) {
+      scrollContainer.scrollTo({
+        top: scrollContainer.scrollHeight,
+        behavior: "smooth",
+      });
+    } else {
+      // Fallback for older browsers
+      el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
   }, [messages]);
 
   const send = async (text) => {
@@ -514,8 +528,11 @@ function ChatPanel({
           ))}
           {isStreaming && (
             <div className="flex justify-start">
-              <div className="bg-slate-900/80 border border-slate-700/80 rounded-2xl px-3 py-2 text-sm text-slate-400">
-                …
+              <div className="chat-assistant-bubble border rounded-2xl px-3 py-2 text-sm flex items-center gap-1.5">
+                <span className="sr-only">Assistant is typing</span>
+                <span className="w-1.5 h-1.5 rounded-full bg-slate-400 dark:bg-slate-500 animate-bounce" style={{ animationDelay: '0ms' }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-slate-400 dark:bg-slate-500 animate-bounce" style={{ animationDelay: '150ms' }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-slate-400 dark:bg-slate-500 animate-bounce" style={{ animationDelay: '300ms' }} />
               </div>
             </div>
           )}

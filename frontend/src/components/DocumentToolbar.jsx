@@ -68,22 +68,6 @@ export default function DocumentToolbar({
           </button>
         )}
 
-        {/* Extract */}
-        {documentReady && (
-          <button
-            type="button"
-            onClick={() => setShowExtract(true)}
-            disabled={extractMutation.isPending}
-            className="doc-toolbar-action-btn inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-sm transition-colors disabled:opacity-50"
-            title="Extract key facts, entities, dates"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6z" />
-            </svg>
-            <span className="hidden sm:inline">Extract</span>
-          </button>
-        )}
-
         {/* Email */}
         {documentReady && (
           <button
@@ -240,35 +224,58 @@ export default function DocumentToolbar({
               </div>
             )}
             {!pageRangesFetching && !pageRangesError && Array.isArray(pageRangesData) && pageRangesData.length > 0 && (
-              <ul className="index-list space-y-3" role="list">
-                {pageRangesData.map((r, idx) => (
-                  <li
-                    key={`${r.start_page}-${r.end_page}-${idx}`}
-                    className="index-card group relative rounded-xl border theme-sidebar overflow-hidden transition-all duration-200 hover:border-indigo-400/40 hover:shadow-md"
-                  >
-                    <div className="absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b from-indigo-500/60 to-violet-500/60 rounded-l-xl opacity-80 group-hover:opacity-100 transition-opacity" aria-hidden />
-                    <div className="pl-4 pr-3 py-3">
-                      <div className="flex items-center gap-2 flex-wrap mb-2">
-                        <span
-                          className="index-section-num flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-indigo-500/20 text-xs font-bold text-indigo-400"
-                          aria-hidden
-                        >
-                          {idx + 1}
-                        </span>
-                        <span className="index-page-badge inline-flex items-center gap-1 rounded-full border border-indigo-400/30 bg-indigo-500/10 px-2.5 py-0.5 text-[11px] font-medium text-indigo-300">
-                          <svg className="h-3 w-3 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                          </svg>
+              <div className="index-table w-full text-xs sm:text-sm">
+                <div className="hidden sm:grid grid-cols-[auto_auto_minmax(0,0.9fr)_minmax(0,1.6fr)] gap-x-3 gap-y-1 px-4 pb-2 text-[11px] font-medium uppercase tracking-wide theme-sidebar-muted">
+                  <span className="pl-3">#</span>
+                  <span className="pl-4">Pages</span>
+                  <span className="pl-2">Title</span>
+                  <span className="pl-1">Summary</span>
+                </div>
+                <ul className="index-list space-y-2" role="list">
+                  {pageRangesData.map((r, idx) => (
+                    <li
+                      key={`${r.start_page}-${r.end_page}-${idx}`}
+                      className="index-row group relative rounded-lg border theme-sidebar px-3 py-2.5 sm:py-2 hover:border-indigo-400/40 hover:bg-indigo-500/5 transition-colors"
+                    >
+                      <div className="grid grid-cols-[auto_minmax(0,1fr)] sm:grid-cols-[auto_auto_minmax(0,0.9fr)_minmax(0,1.6fr)] gap-x-3 gap-y-1 items-start">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="index-section-num flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-indigo-500/20 text-[11px] font-bold text-indigo-400"
+                            aria-hidden
+                          >
+                            {idx + 1}
+                          </span>
+                        </div>
+                        <div className="sm:hidden col-start-2 text-[11px] theme-sidebar-muted">
                           pp. {r.start_page}–{r.end_page}
-                        </span>
+                        </div>
+                        <div className="hidden sm:flex items-center">
+                          <span className="index-page-badge inline-flex items-center gap-1 rounded-full border border-indigo-400/30 bg-indigo-500/10 px-2.5 py-0.5 text-[11px] font-medium text-indigo-300">
+                            <svg className="h-3 w-3 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                            pp. {r.start_page}–{r.end_page}
+                          </span>
+                        </div>
+                        <div className="col-span-1 sm:col-span-1">
+                          {r.title && r.title.trim() ? (
+                            <p className="index-title font-semibold text-inherit leading-snug">
+                              {r.title}
+                            </p>
+                          ) : (
+                            <p className="index-title italic theme-sidebar-muted leading-snug">Untitled section</p>
+                          )}
+                        </div>
+                        <div className="col-span-2 sm:col-span-1">
+                          <p className="index-summary text-[12px] sm:text-sm leading-relaxed text-inherit opacity-95">
+                            {r.summary}
+                          </p>
+                        </div>
                       </div>
-                      <p className="index-summary text-sm leading-relaxed text-inherit opacity-95 pl-0">
-                        {r.summary}
-                      </p>
-                    </div>
-                  </li>
-                ))}
-              </ul>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             )}
             {!pageRangesFetching && !pageRangesError && Array.isArray(pageRangesData) && pageRangesData.length === 0 && (
               <div className="flex flex-col items-center gap-2 py-8 theme-sidebar-muted text-center">

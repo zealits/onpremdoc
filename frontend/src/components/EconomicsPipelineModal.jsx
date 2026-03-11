@@ -183,7 +183,6 @@ export default function EconomicsPipelineModal({ documentId, documentName, onClo
                         <th className="px-3 py-2 whitespace-nowrap text-right">Embedding</th>
                         <th className="px-3 py-2 whitespace-nowrap text-right">Total tokens</th>
                         <th className="px-3 py-2 whitespace-nowrap text-right">Cost (USD)</th>
-                        <th className="px-3 py-2 whitespace-nowrap">Model</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -212,7 +211,6 @@ export default function EconomicsPipelineModal({ documentId, documentName, onClo
                                 ? evt.cost_estimate_usd.toFixed(6)
                                 : '-')}
                           </td>
-                          <td className="px-3 py-2 whitespace-nowrap">{evt.model}</td>
                         </tr>
                       ))}
                     </tbody>
