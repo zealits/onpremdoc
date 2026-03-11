@@ -1620,7 +1620,7 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
         # and assign a short section title for each range.
         section_ranges: List[Dict[str, Any]] = []
         if page_brief_summaries:
-            # Build compact per-page block
+            # Build compact per-page block (reused for both section grouping and whole-document summary)
             lines: List[str] = []
             for p in sorted(page_brief_summaries.keys()):
                 lines.append(f"Page {p}: {page_brief_summaries[p]}")
@@ -1646,9 +1646,9 @@ Per-page summaries:
 Return your answer as a JSON array ONLY, no extra text, in this exact shape:
 
 [
-  {{"title": "Introduction & overview", "start_page": 1, "end_page": 2, "summary": "Introduction to the insurance policy, explaining policy issuance, the free-look cancellation period, and how policyholders can contact the insurer."}},
-  {{"title": "Policy schedule and nominee details", "start_page": 3, "end_page": 4, "summary": "Policy schedule and nominee details including premium information, policy terms, and policyholder information."}},
-  {{"title": "Definitions and key terms", "start_page": 5, "end_page": 7, "summary": "Definitions of key insurance terms used throughout the policy document."}}
+  {{"title": "Section title 1", "start_page": 1, "end_page": 2, "summary": "Brief 1–2 sentence description of what pages 1–2 contain."}},
+  {{"title": "Section title 2", "start_page": 3, "end_page": 4, "summary": "Brief 1–2 sentence description of what pages 3–4 contain."}},
+  {{"title": "Section title 3", "start_page": 5, "end_page": 7, "summary": "Brief 1–2 sentence description of what pages 5–7 contain."}}
 ]"""
 
             try:
@@ -1718,6 +1718,40 @@ Return your answer as a JSON array ONLY, no extra text, in this exact shape:
             with open(page_summary_path, "w", encoding="utf-8") as f:
                 json.dump(section_ranges, f, indent=2, ensure_ascii=False)
             logger.info(f"Section-level page summaries saved to: {page_summary_path}")
+
+            # Additionally, use a third LLM call to generate a single whole-document summary
+            # based on the per-page brief summaries.
+            try:
+                doc_summary_prompt = f"""You are summarizing an entire document based on very short per-page summaries.
+
+Per-page summaries:
+{pages_block}
+
+Your task:
+- Write one high-quality summary of the entire document.
+- Capture its overall purpose, main sections, and what a reader can do with it.
+- Use 7-10 sentences, 2-3 paragraphs.
+- Do not list pages or sections; write it as a continuous paragraph.
+
+Return ONLY the summary text, with no JSON, no bullet points, and no extra commentary."""
+
+                doc_summary_resp = llm.invoke(doc_summary_prompt)
+                doc_summary_text = (getattr(doc_summary_resp, "content", None) or str(doc_summary_resp)).strip()
+
+                # Track approximate LLM output tokens for document-level summary call
+                try:
+                    out_tokens = token_tracker.count_tokens(doc_summary_text)
+                    token_tracker.stats["llm_output_tokens"] = token_tracker.stats.get("llm_output_tokens", 0) + out_tokens
+                except Exception:
+                    pass
+
+                # Persist whole-document summary as a separate JSON file alongside page summaries
+                doc_summary_path = plan_e_dir / f"{doc_stem}_document_brief_summary.json"
+                with open(doc_summary_path, "w", encoding="utf-8") as f:
+                    json.dump({"summary": doc_summary_text}, f, indent=2, ensure_ascii=False)
+                logger.info(f"Whole-document brief summary saved to: {doc_summary_path}")
+            except Exception as e:
+                logger.warning(f"Failed to generate or save whole-document summary: {e}")
         except Exception as e:
             logger.warning(f"Failed to save section-level page summaries: {e}")
     elif page_mapping and llm is None:

@@ -300,54 +300,6 @@ def delete_document_for_user(user_id: int, document_id: str) -> None:
     finally:
         db.close()
 
-def generate_quick_summary(document_id: str) -> str:
-    """
-    Generate a very fast document summary using only the
-    beginning and end of the markdown file.
-    """
-
-    doc_path = get_document_path(document_id)
-
-    md_files = list(doc_path.glob("*.md"))
-    if not md_files:
-        return "Document content not available."
-
-    md_path = md_files[0]
-
-    with open(md_path, "r", encoding="utf-8") as f:
-        text = f.read()
-
-    if len(text) < 4000:
-        snippet = text
-    else:
-        start = text[:2000]
-        end = text[-2000:]
-        snippet = start + "\n...\n" + end
-
-    llm = get_llm(temperature=0)
-
-    prompt = f"""
-You are generating a high-level overview of a document.
-
-The text below contains only fragments from different parts of the document 
-(beginning and ending sections). Use it only to infer the general topic 
-and purpose of the document.
-
-Write a short neutral summary (6–7 sentences) describing what the entire 
-document is about, not just the provided text.
-
-Your task is to just give a very highlevel summary of the document and not the specific details.
-
-Text fragments:
-{snippet}
-"""
-
-    response = llm.invoke(prompt)
-    # Some providers (e.g. OpenAI) return an object with a .content attribute,
-    # others (e.g. Ollama) may return a plain string. Handle both.
-    text = getattr(response, "content", None) or str(response)
-    return text.strip()
-
 def load_agent_for_document(document_id: str) -> Dict[str, Any]:
     """Load agent resources for a document. Raises ValueError if not vectorized or files missing."""
     if document_id in _loaded_agents:
@@ -849,6 +801,39 @@ def get_document_markdown(document_id: str) -> str:
     return md_path.read_text(encoding="utf-8")
 
 
+def get_document_brief_summary(document_id: str) -> str:
+    """
+    Return the whole-document brief summary text for a document.
+    Source: Plan E file *_document_brief_summary.json produced by vectorizerE.
+    Falls back to doc_info['doc_summary'] if the brief summary file is missing.
+    Raises ValueError if neither is available.
+    """
+    # Prefer the new brief summary file written during vectorization.
+    doc_path = get_document_path(document_id)
+    if not doc_path.exists():
+        raise ValueError(f"Document {document_id} not found")
+
+    plan_e_dir = doc_path / "E"
+    if plan_e_dir.exists():
+        candidates = list(plan_e_dir.glob("*_document_brief_summary.json"))
+        if candidates:
+            summary_path = max(candidates, key=lambda p: p.stat().st_mtime)
+            try:
+                with summary_path.open("r", encoding="utf-8") as f:
+                    data = json.load(f)
+                text = (data.get("summary") or "").strip()
+                if text:
+                    return text
+            except Exception as e:
+                logger.warning("Failed to read document brief summary for %s: %s", document_id, e)
+
+    # Fallback to doc_info.doc_summary (older overview JSON)
+    info = get_document_info(document_id)
+    if info and (info.get("doc_summary") or "").strip():
+        return info["doc_summary"].strip()
+
+    raise ValueError("Document summary not available. Ensure the document has been vectorized.")
+
 def get_page_brief_summaries(document_id: str) -> List[Dict[str, Any]]:
     """
     Return section-level page summaries for a document.
@@ -1049,8 +1034,6 @@ def send_document_summary_email(document_id: str, to_email: str, subject: Option
         doc_info = get_document_info(document_id)
         if doc_info and (doc_info.get("doc_summary") or "").strip():
             summary_text = doc_info["doc_summary"].strip()
-        else:
-            summary_text = generate_quick_summary(document_id)
     except Exception as e:
         logger.warning("Could not get summary for email: %s", e)
         summary_text = "Summary not available."

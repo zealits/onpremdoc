@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from uuid import uuid4
+import datetime
 
 import networkx as nx
 import uvicorn
@@ -55,7 +56,7 @@ logger = logging.getLogger(__name__)
 
 # Configuration - use service layer for paths and document ops
 from services import document_service
-from db import init_db, ChatSession, ChatMessage
+from db import init_db, ChatSession, ChatMessage, QueryEconomics
 from auth import router as auth_router, get_current_user, get_db
 from chat_api import router as chat_router
 
@@ -260,6 +261,39 @@ class PipelineEconomicsResponse(BaseModel):
     document_id: str
     events: List[Dict[str, Any]]
     totals: Dict[str, Any]
+
+
+class QueryEconomicsItem(BaseModel):
+    """Single saved query economics record."""
+
+    id: int
+    session_id: int
+    document_id: str
+    query: str
+    created_at: str
+    total_input_tokens: int
+    total_output_tokens: int
+    total_embedding_tokens: int
+    total_tokens: int
+    cost_estimate_usd: Optional[float] = None
+    pricing: Dict[str, Any] = Field(default_factory=dict)
+
+
+class QueryEconomicsListResponse(BaseModel):
+    """List of saved query economics records plus aggregated totals."""
+
+    items: List[QueryEconomicsItem]
+    total_input_tokens: int
+    total_output_tokens: int
+    total_embedding_tokens: int
+    total_tokens: int
+    total_cost_estimate_usd: Optional[float] = None
+
+
+class DocumentSummaryResponse(BaseModel):
+    """Whole-document summary for a single document"""
+    document_id: str
+    summary: str
 
 
 # ---------------- LIFECYCLE MANAGEMENT ----------------
@@ -694,11 +728,6 @@ async def vectorize_document(
             status_code=404,
             detail=f"Document {document_id} not found"
         )
-    doc_info = get_document_info(document_id)
-
-    # Generate quick summary immediately
-    summary = document_service.generate_quick_summary(document_id)
-
     # Start vectorization in background
     background_tasks.add_task(
         document_service.trigger_vectorize,
@@ -708,8 +737,35 @@ async def vectorize_document(
     return {
         "document_id": document_id,
         "status": "vectorization_started",
-        "summary": summary
     }
+
+
+@app.get(
+    "/documents/{document_id}/summary",
+    response_model=DocumentSummaryResponse,
+    tags=["Documents"],
+)
+async def get_document_summary(
+    document_id: str = PathParam(..., description="Document ID"),
+    current_user=Depends(get_current_user),
+):
+    """
+    Get the whole-document brief summary for a document.
+
+    Data comes from the Plan E file *_document_brief_summary.json produced
+    during vectorization, or falls back to the older doc_overview summary
+    if that file is not present.
+    """
+    try:
+        document_service.ensure_document_belongs_to_user(document_id, current_user.id)
+        text = document_service.get_document_brief_summary(document_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error getting document summary for {document_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to load document summary")
+
+    return DocumentSummaryResponse(document_id=document_id, summary=text)
 
 
 def vectorize_background(document_id: str):
@@ -746,6 +802,75 @@ async def economics_summary(date: Optional[str] = Query(None, description="Date 
     except Exception as e:
         logger.error(f"Economics summary error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get(
+    "/economics/queries",
+    response_model=QueryEconomicsListResponse,
+    tags=["Economics"],
+)
+async def economics_queries(
+    session_id: Optional[int] = Query(
+        None,
+        description="Chat session ID to filter by (optional)",
+    ),
+    document_id: Optional[str] = Query(
+        None,
+        description="Document ID to filter by (optional)",
+    ),
+    current_user=Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """
+    Return saved per-query economics for the authenticated user.
+
+    You can filter by chat session or document. If no filters are provided,
+    all queries for the user are returned.
+    """
+    q = db.query(QueryEconomics).filter(QueryEconomics.user_id == current_user.id)
+    if session_id is not None:
+        q = q.filter(QueryEconomics.session_id == session_id)
+    if document_id is not None:
+        q = q.filter(QueryEconomics.document_id == document_id)
+
+    rows = q.order_by(QueryEconomics.created_at.asc()).all()
+
+    items: List[QueryEconomicsItem] = []
+    total_in = total_out = total_emb = total_tokens = 0
+    total_cost: Optional[float] = 0.0
+
+    for r in rows:
+        total_in += int(r.total_input_tokens or 0)
+        total_out += int(r.total_output_tokens or 0)
+        total_emb += int(r.total_embedding_tokens or 0)
+        total_tokens += int(r.total_tokens or 0)
+        if r.cost_estimate_usd is not None:
+            total_cost = (total_cost or 0.0) + float(r.cost_estimate_usd)
+
+        items.append(
+            QueryEconomicsItem(
+                id=r.id,
+                session_id=r.session_id,
+                document_id=r.document_id,
+                query=r.query,
+                created_at=r.created_at.isoformat() + "Z",
+                total_input_tokens=r.total_input_tokens,
+                total_output_tokens=r.total_output_tokens,
+                total_embedding_tokens=r.total_embedding_tokens,
+                total_tokens=r.total_tokens,
+                cost_estimate_usd=r.cost_estimate_usd,
+                pricing=r.pricing or {},
+            )
+        )
+
+    return QueryEconomicsListResponse(
+        items=items,
+        total_input_tokens=total_in,
+        total_output_tokens=total_out,
+        total_embedding_tokens=total_emb,
+        total_tokens=total_tokens,
+        total_cost_estimate_usd=total_cost if total_cost is not None else None,
+    )
 
 
 @app.get(
@@ -1179,6 +1304,30 @@ async def query_document(
             )
             db.add(assistant_msg)
             db.commit()
+
+        # Persist per-query economics snapshot for reporting.
+        try:
+            econ = result.get("economics") or {}
+            if econ:
+                pricing = econ.get("pricing") or {}
+                rec = QueryEconomics(
+                    user_id=current_user.id,
+                    session_id=session_id,
+                    document_id=request.document_id,
+                    query=request.query,
+                    total_input_tokens=int(econ.get("total_input_tokens", 0) or 0),
+                    total_output_tokens=int(econ.get("total_output_tokens", 0) or 0),
+                    total_embedding_tokens=int(econ.get("total_embedding_tokens", 0) or 0),
+                    total_tokens=int(econ.get("total_tokens", 0) or 0),
+                    cost_estimate_usd=pricing.get("cost_estimate_usd"),
+                    pricing=pricing,
+                    steps=econ.get("steps") or [],
+                )
+                db.add(rec)
+                db.commit()
+        except Exception as e:
+            logger.error(f"Failed to persist query economics: {e}", exc_info=True)
+            db.rollback()
 
         # Signal completion
         yield json.dumps({"type": "done"}, ensure_ascii=False) + "\n"

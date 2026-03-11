@@ -9,6 +9,7 @@ from sqlalchemy import (
     Boolean,
     ForeignKey,
     Text,
+    Float,
 )
 from sqlalchemy.dialects.sqlite import JSON as SQLiteJSON
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
@@ -89,6 +90,29 @@ class DocumentRecord(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     user = relationship("User", back_populates="documents")
+
+
+class QueryEconomics(Base):
+    """Per-query token usage and cost snapshot, persisted for reporting."""
+
+    __tablename__ = "query_economics"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    session_id = Column(Integer, ForeignKey("chat_sessions.id"), nullable=False, index=True)
+    document_id = Column(String(128), nullable=False, index=True)
+    query = Column(Text, nullable=False)
+    total_input_tokens = Column(Integer, default=0, nullable=False)
+    total_output_tokens = Column(Integer, default=0, nullable=False)
+    total_embedding_tokens = Column(Integer, default=0, nullable=False)
+    total_tokens = Column(Integer, default=0, nullable=False)
+    cost_estimate_usd = Column(Float, nullable=True)
+    pricing = Column(SQLiteJSON, nullable=True)
+    steps = Column(SQLiteJSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User")
+    session = relationship("ChatSession")
 
 
 def init_db() -> None:
