@@ -271,3 +271,15 @@ export async function getEconomicsPipeline(documentId) {
 export async function getDocumentPageRanges(documentId) {
   return request(`/documents/${documentId}/page_ranges`)
 }
+
+export async function getQueryEconomics(documentId, sessionId = null) {
+  const params = new URLSearchParams()
+  if (sessionId != null) {
+    params.set('session_id', String(sessionId))
+  }
+  if (documentId) {
+    params.set('document_id', documentId)
+  }
+  const qs = params.toString() ? `?${params.toString()}` : ''
+  return request(`/economics/queries${qs}`)
+}

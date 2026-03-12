@@ -20,6 +20,7 @@ import {
   emailDocumentSummary,
   getEconomicsPipeline,
   getDocumentPageRanges,
+  getQueryEconomics,
 } from './client'
 
 export const documentKeys = {
@@ -174,6 +175,16 @@ export function useDocumentPageRanges(documentId, options = {}) {
     staleTime: 5 * 60 * 1000,
     retry: 2,
     retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 5000),
+    ...options,
+  })
+}
+
+export function useQueryEconomics(documentId, sessionId = null, options = {}) {
+  return useQuery({
+    queryKey: ['economics', 'queries', documentId, sessionId],
+    queryFn: () => getQueryEconomics(documentId, sessionId),
+    enabled: !!documentId && !!(options.enabled !== false),
+    staleTime: 5 * 60 * 1000,
     ...options,
   })
 }

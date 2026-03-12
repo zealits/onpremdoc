@@ -1031,7 +1031,8 @@ Again, the question to answer is: {query}
 Write the answer in CLEAR, WELL-FORMATTED MARKDOWN:
 
 - Start with a one-line **Short Answer**.
-- Then add a **Detailed Explanation** section with 1–3 short paragraphs.
+- If the document does not state something explicitly, do not add any details, instead say that this information is not available in pdf.
+- Then add a *Explanation* section with the size of the text required for a chat responce with as is wording from the context.
 - Use **bold subheadings** for important parts (for example: **Definition**, **Conditions**, **Exceptions**, **Important Dates**).
 - When listing items, steps, obligations, or conditions, use bullet points.
 - If the document does not state something explicitly, say that clearly (do not invent details).

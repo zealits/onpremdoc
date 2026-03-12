@@ -1,7 +1,28 @@
-import { useEconomicsPipeline } from '../api/hooks'
+import { useState } from 'react'
+import { useEconomicsPipeline, useQueryEconomics } from '../api/hooks'
 
 export default function EconomicsPipelineModal({ documentId, documentName, onClose }) {
-  const { data, isLoading, isError, error, refetch, isFetching } = useEconomicsPipeline(documentId)
+  const [activeTab, setActiveTab] = useState('pipeline')
+
+  const {
+    data,
+    isLoading,
+    isError,
+    error,
+    refetch,
+    isFetching,
+  } = useEconomicsPipeline(documentId)
+
+  const {
+    data: queriesData,
+    isLoading: isQueriesLoading,
+    isError: isQueriesError,
+    error: queriesError,
+    refetch: refetchQueries,
+    isFetching: queriesFetching,
+  } = useQueryEconomics(documentId, null, {
+    enabled: !!documentId && activeTab === 'queries',
+  })
 
   const events = data?.events ?? []
   const totals = data?.totals ?? null
@@ -40,7 +61,7 @@ export default function EconomicsPipelineModal({ documentId, documentName, onClo
         <div className="flex items-center justify-between px-5 py-4 border-b theme-sidebar">
           <div>
             <h2 id="economics-modal-title" className="text-lg font-semibold">
-              Processing summary
+              Economics
             </h2>
             {documentName && (
               <p className="text-xs opacity-70 mt-0.5 truncate max-w-md">
@@ -49,13 +70,37 @@ export default function EconomicsPipelineModal({ documentId, documentName, onClo
             )}
           </div>
           <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1 rounded-lg bg-slate-900/40 p-0.5 border border-slate-700/60">
+              <button
+                type="button"
+                onClick={() => setActiveTab('pipeline')}
+                className={`px-2.5 py-1.5 text-xs rounded-md font-medium transition-colors ${
+                  activeTab === 'pipeline'
+                    ? 'bg-slate-100 text-slate-900 dark:bg-slate-50 dark:text-slate-900'
+                    : 'text-slate-300 hover:bg-slate-800/80'
+                }`}
+              >
+                Processing
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('queries')}
+                className={`px-2.5 py-1.5 text-xs rounded-md font-medium transition-colors ${
+                  activeTab === 'queries'
+                    ? 'bg-slate-100 text-slate-900 dark:bg-slate-50 dark:text-slate-900'
+                    : 'text-slate-300 hover:bg-slate-800/80'
+                }`}
+              >
+                Queries
+              </button>
+            </div>
             <button
               type="button"
-              onClick={() => refetch()}
-              disabled={isFetching}
+              onClick={() => (activeTab === 'pipeline' ? refetch() : refetchQueries())}
+              disabled={activeTab === 'pipeline' ? isFetching : queriesFetching}
               className="text-xs px-3 py-1.5 rounded-lg border theme-sidebar-muted disabled:opacity-50"
             >
-              {isFetching ? 'Refreshing…' : 'Refresh'}
+              {(activeTab === 'pipeline' ? isFetching : queriesFetching) ? 'Refreshing…' : 'Refresh'}
             </button>
             <button
               type="button"
@@ -71,19 +116,20 @@ export default function EconomicsPipelineModal({ documentId, documentName, onClo
         </div>
 
         <div className="p-5 overflow-auto text-sm space-y-4">
-          {isLoading ? (
-            <div className="flex items-center gap-2 theme-sidebar-muted">
-              <span className="inline-block w-4 h-4 rounded-full border-2 border-indigo-400/60 border-t-transparent animate-spin" />
-              Loading economics data…
-            </div>
-          ) : isError ? (
-            <div className="text-sm text-rose-400">
-              {error?.message || 'Failed to load economics pipeline data.'}
-            </div>
-          ) : !data ? (
-            <div className="theme-sidebar-muted">No economics data available for this document.</div>
-          ) : (
-            <>
+          {activeTab === 'pipeline' ? (
+            isLoading ? (
+              <div className="flex items-center gap-2 theme-sidebar-muted">
+                <span className="inline-block w-4 h-4 rounded-full border-2 border-indigo-400/60 border-t-transparent animate-spin" />
+                Loading economics data…
+              </div>
+            ) : isError ? (
+              <div className="text-sm text-rose-400">
+                {error?.message || 'Failed to load economics pipeline data.'}
+              </div>
+            ) : !data ? (
+              <div className="theme-sidebar-muted">No economics data available for this document.</div>
+            ) : (
+              <>
               <div className="space-y-4">
                 {(filename || totalPages != null || totalWords != null || humanFileSize) && (
                   <div>
@@ -209,6 +255,107 @@ export default function EconomicsPipelineModal({ documentId, documentName, onClo
                             {evt.pricing?.cost_display ??
                               (evt.cost_estimate_usd != null
                                 ? evt.cost_estimate_usd.toFixed(6)
+                                : '-')}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+            )
+          ) : isQueriesLoading && !queriesData ? (
+            <div className="flex items-center gap-2 theme-sidebar-muted">
+              <span className="inline-block w-4 h-4 rounded-full border-2 border-indigo-400/60 border-t-transparent animate-spin" />
+              Loading query economics…
+            </div>
+          ) : isQueriesError ? (
+            <div className="text-sm text-rose-400">
+              {queriesError?.message || 'Failed to load query economics data.'}
+            </div>
+          ) : !queriesData || !Array.isArray(queriesData.items) || queriesData.items.length === 0 ? (
+            <div className="theme-sidebar-muted">No query economics data available for this document.</div>
+          ) : (
+            <>
+              <div>
+                <h3 className="font-semibold mb-2 text-inherit">Totals</h3>
+                <div className="border rounded-xl overflow-hidden">
+                  <table className="min-w-full text-xs sm:text-sm">
+                    <tbody>
+                      <tr className="theme-card border-b">
+                        <td className="px-3 py-2">Input tokens</td>
+                        <td className="px-3 py-2 text-right">{queriesData.total_input_tokens}</td>
+                      </tr>
+                      <tr className="theme-card border-b">
+                        <td className="px-3 py-2">Output tokens</td>
+                        <td className="px-3 py-2 text-right">{queriesData.total_output_tokens}</td>
+                      </tr>
+                      <tr className="theme-card border-b">
+                        <td className="px-3 py-2">Embedding tokens</td>
+                        <td className="px-3 py-2 text-right">{queriesData.total_embedding_tokens}</td>
+                      </tr>
+                      <tr className="theme-card border-b">
+                        <td className="px-3 py-2">Total tokens</td>
+                        <td className="px-3 py-2 text-right">{queriesData.total_tokens}</td>
+                      </tr>
+                      <tr className="theme-card">
+                        <td className="px-3 py-2">Total cost estimate (USD)</td>
+                        <td className="px-3 py-2 text-right">
+                          {queriesData.total_cost_estimate_usd != null
+                            ? queriesData.total_cost_estimate_usd.toFixed(6)
+                            : '-'}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div>
+                <h3 className="font-semibold mb-2 text-inherit">Per-query breakdown</h3>
+                <div className="border rounded-xl overflow-x-auto">
+                  <table className="min-w-max w-full text-xs sm:text-sm">
+                    <thead className="theme-sidebar text-left">
+                      <tr>
+                        <th className="px-3 py-2 whitespace-nowrap">Time</th>
+                        <th className="px-3 py-2 whitespace-nowrap">Session</th>
+                        <th className="px-3 py-2 whitespace-nowrap">Question</th>
+                        <th className="px-3 py-2 whitespace-nowrap text-right">Input</th>
+                        <th className="px-3 py-2 whitespace-nowrap text-right">Output</th>
+                        <th className="px-3 py-2 whitespace-nowrap text-right">Embedding</th>
+                        <th className="px-3 py-2 whitespace-nowrap text-right">Total tokens</th>
+                        <th className="px-3 py-2 whitespace-nowrap text-right">Cost (USD)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {queriesData.items.map((item) => (
+                        <tr key={item.id} className="border-t theme-card align-top">
+                          <td className="px-3 py-2 whitespace-nowrap">
+                            {item.created_at ? new Date(item.created_at).toLocaleString() : '-'}
+                          </td>
+                          <td className="px-3 py-2 whitespace-nowrap">{item.session_id}</td>
+                          <td className="px-3 py-2 max-w-xs sm:max-w-md">
+                            <div className="truncate" title={item.query}>
+                              {item.query}
+                            </div>
+                          </td>
+                          <td className="px-3 py-2 whitespace-nowrap text-right">
+                            {item.total_input_tokens ?? 0}
+                          </td>
+                          <td className="px-3 py-2 whitespace-nowrap text-right">
+                            {item.total_output_tokens ?? 0}
+                          </td>
+                          <td className="px-3 py-2 whitespace-nowrap text-right">
+                            {item.total_embedding_tokens ?? 0}
+                          </td>
+                          <td className="px-3 py-2 whitespace-nowrap text-right">
+                            {item.total_tokens ?? 0}
+                          </td>
+                          <td className="px-3 py-2 whitespace-nowrap text-right">
+                            {item.pricing?.cost_display ??
+                              (item.cost_estimate_usd != null
+                                ? item.cost_estimate_usd.toFixed(6)
                                 : '-')}
                           </td>
                         </tr>
