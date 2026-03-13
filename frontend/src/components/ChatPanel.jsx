@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import { queryDocumentStream } from "../api/client";
 import { useDocument } from "../api/hooks";
@@ -54,8 +54,8 @@ function ProcessingInterface({ documentName, documentStatus }) {
   const currentStep = currentStepIndex >= 0 ? currentStepIndex : 0;
 
   return (
-    <div className="flex flex-col h-full items-center justify-center p-8 theme-main border-l theme-card">
-      <div className="animate-processing-fade-in text-center max-w-md w-full">
+    <div className="flex flex-col h-full items-center justify-center p-4 sm:p-6 md:p-8 theme-main md:border-l theme-card">
+      <div className="animate-processing-fade-in text-center max-w-sm sm:max-w-md w-full">
         {/* Main Processing Icon */}
         <div className="relative inline-flex justify-center mb-8">
           <div 
@@ -70,23 +70,25 @@ function ProcessingInterface({ documentName, documentStatus }) {
         </div>
 
         {/* Current Step Info */}
-        <div className="mb-8">
-          <h3 className="text-xl font-semibold mb-2 theme-card text-inherit">{steps[currentStep].title}</h3>
-          <p className="theme-sidebar-muted text-sm leading-relaxed">{steps[currentStep].description}</p>
+        <div className="mb-6 sm:mb-8">
+          <h3 className="text-lg sm:text-xl font-semibold mb-2 theme-card text-inherit">{steps[currentStep].title}</h3>
+          <p className="theme-sidebar-muted text-xs sm:text-sm leading-relaxed">{steps[currentStep].description}</p>
           {documentName && (
-            <p className="theme-sidebar-muted text-xs mt-2 opacity-75">Processing: {documentName}</p>
+            <p className="theme-sidebar-muted text-[10px] sm:text-xs mt-2 opacity-75 truncate">
+              <span className="hidden sm:inline">Processing: </span>{documentName}
+            </p>
           )}
         </div>
 
         {/* Progress Steps */}
-        <div className="space-y-4 mb-8">
+        <div className="space-y-3 sm:space-y-4 mb-6 sm:mb-8">
           {steps.map((step, index) => {
             const isActive = index === currentStep;
             const isCompleted = index < currentStep;
             const isPending = index > currentStep;
             
             return (
-              <div key={step.id} className="flex items-center justify-between p-3 rounded-xl theme-card border processing-step-card">
+              <div key={step.id} className="flex items-center justify-between p-2.5 sm:p-3 rounded-lg sm:rounded-xl theme-card border processing-step-card">
                 <div className="flex items-center gap-3">
                   <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all duration-500 ${
                     isActive 
@@ -103,13 +105,13 @@ function ProcessingInterface({ documentName, documentStatus }) {
                       React.cloneElement(step.icon, { className: "w-4 h-4" })
                     )}
                   </div>
-                  <div className="text-left">
-                    <p className={`text-sm font-medium transition-colors duration-500 ${
+                  <div className="text-left min-w-0 flex-1">
+                    <p className={`text-xs sm:text-sm font-medium transition-colors duration-500 truncate ${
                       isActive ? 'text-indigo-600 dark:text-indigo-400' : 'text-inherit'
                     }`}>
                       {step.title}
                     </p>
-                    <p className="text-xs theme-sidebar-muted">{step.description}</p>
+                    <p className="text-[10px] sm:text-xs theme-sidebar-muted line-clamp-2 sm:line-clamp-1">{step.description}</p>
                   </div>
                 </div>
                 
@@ -249,9 +251,9 @@ function CitationButton({ chunkId, chunks, onHighlight, variant = "citation" }) 
     });
   };
 
-  const baseClasses = "inline align-baseline mx-0.5 px-1.5 py-0.5 rounded text-xs font-medium cursor-pointer transition-all duration-200";
+  const baseClasses = "inline align-baseline mx-0.5 px-1.5 py-0.5 rounded text-xs font-medium cursor-pointer transition-all duration-200 touch-manipulation";
   const citationClasses = "text-blue-600 hover:text-blue-800 hover:underline bg-transparent border-0 hover:scale-105 active:scale-95";
-  const sourceClasses = "text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 hover:border-indigo-300 dark:text-indigo-300 dark:hover:text-indigo-200 dark:bg-indigo-900/30 dark:hover:bg-indigo-900/50 dark:border-indigo-800 dark:hover:border-indigo-600 hover:scale-105 active:scale-95 hover:shadow-sm";
+  const sourceClasses = "text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 hover:border-indigo-300 dark:text-indigo-300 dark:hover:text-indigo-200 dark:bg-indigo-900/30 dark:hover:bg-indigo-900/50 dark:border-indigo-800 dark:hover:border-indigo-600 hover:scale-105 active:scale-95 hover:shadow-sm min-h-[28px] min-w-[28px] flex items-center justify-center";
 
   const classes = variant === "source" ? `${baseClasses} ${sourceClasses}` : `${baseClasses} ${citationClasses}`;
 
@@ -295,6 +297,45 @@ function ChatPanel({
   const typingIntervalRef = useRef(null);
   const currentTypingIndexRef = useRef(0);
   const [typingPhase, setTypingPhase] = useState("chunks"); // "chunks", "content", "questions"
+  
+  // Mobile-specific states
+  const [isMobileDevice, setIsMobileDevice] = useState(false);
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  
+  // Detect mobile device and keyboard visibility
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobileDevice(window.innerWidth < 768);
+    };
+    
+    const handleResize = () => {
+      checkMobile();
+      // Detect virtual keyboard on mobile
+      if (window.innerWidth < 768) {
+        const heightDiff = window.screen.height - window.innerHeight;
+        setIsKeyboardVisible(heightDiff > 150);
+      }
+    };
+    
+    checkMobile();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+  
+  // Mobile touch scroll optimization
+  const chatContainerRef = useRef(null);
+  
+  const optimizeScrollForMobile = useCallback(() => {
+    if (isMobileDevice && chatContainerRef.current) {
+      const container = chatContainerRef.current;
+      container.style.webkitOverflowScrolling = 'touch';
+      container.style.scrollBehavior = 'smooth';
+    }
+  }, [isMobileDevice]);
+  
+  useEffect(() => {
+    optimizeScrollForMobile();
+  }, [optimizeScrollForMobile]);
 
   // Sequential typing effect function
   const startSequentialTypingEffect = (fullText, messageIndex, messageMetadata) => {
@@ -561,18 +602,26 @@ function ChatPanel({
   }
 
   return (
-    <div className="chat-shell flex flex-col h-full min-h-0 px-3 py-3 sm:px-4 sm:py-4 border-l border-slate-800">
-      <div className="flex flex-col h-full min-h-0 rounded-2xl theme-card shadow-[0_18px_60px_rgba(15,23,42,0.25)]">
-        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-4 pt-4 pb-2 space-y-4 column-scroll">
+    <div className="chat-shell flex flex-col h-full min-h-0 px-2 py-2 sm:px-3 sm:py-3 md:px-4 md:py-4 md:border-l border-slate-800 mobile-safe-area">
+      <div className="flex flex-col h-full min-h-0 rounded-xl md:rounded-2xl theme-card shadow-lg md:shadow-[0_18px_60px_rgba(15,23,42,0.25)]">
+        <div 
+          ref={chatContainerRef}
+          className={`flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-3 sm:px-4 pt-3 sm:pt-4 pb-2 space-y-3 sm:space-y-4 column-scroll ${
+            isKeyboardVisible ? 'pb-4' : ''
+          }`}
+        >
           {(showSummaryBlock == null ? documentSummary || (documentReady && isSummaryLoading) : showSummaryBlock) && (
-            <div className="document-summary mb-6 pb-6 border-b border-slate-600/40">
-              <div className="flex items-center gap-2 mb-4">
-                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow-sm">
-                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+            <div className="document-summary mb-4 sm:mb-6 pb-4 sm:pb-6 border-b border-slate-600/40">
+              <div className="flex items-center gap-2 mb-3 sm:mb-4">
+                <div className="flex h-7 w-7 sm:h-8 sm:w-8 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow-sm">
+                  <svg className="h-3.5 w-3.5 sm:h-4 sm:w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                   </svg>
                 </div>
-                <h2 className="text-lg font-semibold text-inherit">{documentName || "Document"} Summary</h2>
+                <h2 className="text-base sm:text-lg font-semibold text-inherit truncate">
+                  <span className="hidden sm:inline">{documentName || "Document"} Summary</span>
+                  <span className="sm:hidden">Summary</span>
+                </h2>
               </div>
               {isSummaryLoading ? (
                 <div className="flex items-center gap-3 py-8 theme-sidebar-muted">
@@ -593,15 +642,17 @@ function ChatPanel({
             </div>
           )}
           {messages.length === 0 && (
-            <div className="space-y-4 mt-2">
-              <p className="font-medium text-base text-inherit">Ask anything about this document.</p>
-              <div className="flex flex-wrap gap-2.5">
+            <div className="space-y-3 sm:space-y-4 mt-2">
+              <p className="font-medium text-sm sm:text-base text-inherit">Ask anything about this document.</p>
+              <div className={`grid grid-cols-1 ${isMobileDevice ? 'gap-2' : 'sm:grid-cols-2 gap-2 sm:gap-2.5'} suggested-questions`}>
                 {suggested.map((q) => (
                   <button
                     key={q}
                     type="button"
                     onClick={() => send(q)}
-                    className="px-4 py-2.5 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 text-sm hover:bg-indigo-100 dark:hover:bg-indigo-900/50 hover:border-indigo-300 dark:hover:border-indigo-600 transition-colors font-medium"
+                    className={`px-3 sm:px-4 py-3 sm:py-2.5 rounded-lg sm:rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 text-xs sm:text-sm hover:bg-indigo-100 dark:hover:bg-indigo-900/50 hover:border-indigo-300 dark:hover:border-indigo-600 transition-all font-medium touch-manipulation active:scale-95 text-left ${
+                      isMobileDevice ? 'min-h-[48px] flex items-center' : ''
+                    }`}
                   >
                     {q}
                   </button>
@@ -612,7 +663,7 @@ function ChatPanel({
           {messages.map((msg, i) => (
             <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
               <div
-                className={`max-w-[85%] rounded-2xl px-3.5 py-2.5 text-sm shadow-sm ${
+                className={`max-w-[90%] sm:max-w-[85%] rounded-xl sm:rounded-2xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm shadow-sm ${
                   msg.role === "user"
                     ? "bg-gradient-to-r from-indigo-500 to-violet-500 text-white"
                     : "chat-assistant-bubble border"
@@ -726,13 +777,13 @@ function ChatPanel({
                             </p>
                           </div>
                         </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <div className="grid grid-cols-1 gap-2 sm:gap-2.5">
                           {msg.next_questions.map((question, j) => (
                             <button
                               key={j}
                               type="button"
                               onClick={() => send(question)}
-                              className="group flex w-full items-start gap-2 rounded-xl border border-indigo-200 bg-white/80 px-3 py-2 text-left text-xs sm:text-sm text-slate-800 hover:bg-indigo-50 hover:border-indigo-400/70 dark:border-indigo-500/20 dark:bg-indigo-500/5 dark:text-indigo-50 dark:hover:bg-indigo-500/15 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+                              className="group flex w-full items-start gap-2 rounded-lg sm:rounded-xl border border-indigo-200 bg-white/80 px-3 py-2.5 text-left text-xs sm:text-sm text-slate-800 hover:bg-indigo-50 hover:border-indigo-400/70 dark:border-indigo-500/20 dark:bg-indigo-500/5 dark:text-indigo-50 dark:hover:bg-indigo-500/15 transition-all disabled:opacity-60 disabled:cursor-not-allowed touch-manipulation active:scale-98 min-h-[44px]"
                               disabled={isStreaming}
                             >
                               <span className="mt-1 h-1.5 w-1.5 rounded-full bg-indigo-400 group-hover:bg-indigo-500 dark:group-hover:bg-indigo-300 flex-shrink-0" />
@@ -763,25 +814,30 @@ function ChatPanel({
           )}
           <div ref={bottomRef} />
         </div>
-        <form onSubmit={onSubmit} className="px-4 pt-2 pb-4 border-t border-slate-800/80 shrink-0">
+        <form 
+          onSubmit={onSubmit} 
+          className={`px-3 sm:px-4 pt-2 pb-3 sm:pb-4 border-t border-slate-800/80 shrink-0 ${
+            isKeyboardVisible ? 'pb-2' : ''
+          }`}
+        >
           <div className="flex gap-2 items-end">
             <input
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               placeholder="Ask any question…"
-              className="chat-input flex-1 px-4 py-2.5 rounded-xl bg-slate-900/70 border border-slate-700/80 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/80 focus:border-transparent"
+              className="chat-input flex-1 px-3 sm:px-4 py-2.5 sm:py-3 rounded-lg sm:rounded-xl bg-slate-900/70 border border-slate-700/80 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/80 focus:border-transparent text-sm sm:text-base min-h-[44px]"
               disabled={isStreaming}
               aria-label="Ask a question"
             />
             <button
               type="submit"
               disabled={!input.trim() || isStreaming}
-              className="inline-flex items-center justify-center px-4 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-500 text-white font-medium shadow-sm hover:shadow-md hover:brightness-105 disabled:opacity-60 disabled:cursor-not-allowed"
+              className="inline-flex items-center justify-center px-3 sm:px-4 py-2.5 sm:py-3 rounded-lg sm:rounded-xl bg-gradient-to-r from-indigo-500 to-violet-500 text-white font-medium shadow-sm hover:shadow-md hover:brightness-105 disabled:opacity-60 disabled:cursor-not-allowed touch-manipulation active:scale-95 min-h-[44px] min-w-[44px] sm:min-w-auto"
               aria-label="Send"
             >
               <span className="hidden sm:inline mr-1.5">Send</span>
-              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <svg className="h-4 w-4 sm:h-5 sm:w-5" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path
                   d="M5 12H19M19 12L13 6M19 12L13 18"
                   stroke="currentColor"

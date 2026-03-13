@@ -766,3 +766,218 @@ html[data-theme='light'] .bg-gray-200 {
 .typing-phase-enter {
   animation: fade-in-up 0.4s ease-out forwards;
 }
+
+/* Mobile-specific enhancements */
+@media (max-width: 767px) {
+  /* Improved touch targets for mobile */
+  .touch-manipulation {
+    touch-action: manipulation;
+  }
+  
+  /* Better mobile scrolling */
+  .column-scroll {
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  
+  .column-scroll::-webkit-scrollbar {
+    display: none;
+  }
+  
+  /* Mobile-optimized chat bubbles */
+  .chat-assistant-bubble {
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  
+  /* Mobile input focus improvements */
+  input:focus,
+  textarea:focus {
+    transform: none;
+    zoom: 1;
+  }
+  
+  /* Prevent zoom on input focus on iOS */
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  textarea {
+    font-size: 16px;
+  }
+  
+  /* Mobile-friendly button sizing */
+  button {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  
+  /* Optimized spacing for mobile */
+  .space-y-3 > * + * {
+    margin-top: 12px;
+  }
+  
+  /* Mobile-specific gradient backgrounds */
+  .theme-shell {
+    background: linear-gradient(135deg, #020617 0%, #0f172a 50%, #020617 100%);
+  }
+  
+  html[data-theme='light'] .theme-shell {
+    background: linear-gradient(135deg, #f9fafb 0%, #ffffff 50%, #f3f4f6 100%);
+  }
+  
+  /* Mobile sidebar overlay blur effect */
+  .mobile-sidebar-overlay {
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+  
+  /* Mobile header improvements */
+  .mobile-header {
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+  }
+  
+  html[data-theme='dark'] .mobile-header {
+    background: rgba(15, 23, 42, 0.95);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  
+  /* Mobile animation improvements */
+  .active\:scale-95:active {
+    transform: scale(0.95);
+    transition: transform 0.1s ease-out;
+  }
+  
+  .active\:scale-98:active {
+    transform: scale(0.98);
+    transition: transform 0.1s ease-out;
+  }
+  
+  /* Mobile-specific processing interface */
+  .processing-main-icon {
+    width: 64px;
+    height: 64px;
+  }
+  
+  /* Mobile citation buttons */
+  .chunk-citation {
+    min-height: 32px;
+    padding: 4px 8px;
+    font-size: 12px;
+  }
+  
+  /* Mobile follow-up questions */
+  .grid > button {
+    justify-content: flex-start;
+    text-align: left;
+    word-wrap: break-word;
+    hyphens: auto;
+  }
+  
+  /* Mobile document summary */
+  .document-summary {
+    padding: 16px;
+    margin: 8px 0;
+  }
+  
+  /* Mobile suggested questions */
+  .suggested-questions {
+    gap: 8px;
+  }
+  
+  .suggested-questions button {
+    padding: 12px 16px;
+    line-height: 1.4;
+    white-space: normal;
+    word-wrap: break-word;
+  }
+}
+
+/* Tablet-specific optimizations */
+@media (min-width: 768px) and (max-width: 1023px) {
+  .chat-assistant-bubble {
+    max-width: 80%;
+  }
+  
+  .suggested-questions {
+    grid-template-columns: 1fr 1fr;
+  }
+  
+  .processing-main-icon {
+    width: 72px;
+    height: 72px;
+  }
+}
+
+/* High DPI display optimizations */
+@media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {
+  .theme-card {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1), 0 1px 3px rgba(0, 0, 0, 0.05);
+  }
+  
+  .chat-assistant-bubble {
+    border-width: 0.5px;
+  }
+}
+
+/* Dark mode mobile enhancements */
+@media (max-width: 767px) and (prefers-color-scheme: dark) {
+  .theme-sidebar {
+    background: rgba(15, 23, 42, 0.98);
+  }
+  
+  .theme-card {
+    background: rgba(15, 23, 42, 0.95);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+  }
+}
+
+/* Light mode mobile enhancements */
+@media (max-width: 767px) and (prefers-color-scheme: light) {
+  .theme-sidebar {
+    background: rgba(249, 250, 251, 0.98);
+  }
+  
+  .theme-card {
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+  }
+}
+
+/* Reduced motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  .active\:scale-95:active,
+  .active\:scale-98:active,
+  .hover\:scale-105:hover {
+    transform: none;
+  }
+  
+  .animate-bounce,
+  .animate-pulse,
+  .animate-spin {
+    animation: none;
+  }
+  
+  .transition-all,
+  .transition-colors,
+  .transition-transform {
+    transition: none;
+  }
+}
+
+/* Safe area insets for iOS devices */
+@supports (padding: max(0px)) {
+  .mobile-safe-area {
+    padding-left: max(16px, env(safe-area-inset-left));
+    padding-right: max(16px, env(safe-area-inset-right));
+    padding-bottom: max(16px, env(safe-area-inset-bottom));
+  }
+  
+  .mobile-header {
+    padding-top: max(12px, env(safe-area-inset-top));
+  }
+}
