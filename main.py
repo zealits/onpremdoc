@@ -27,6 +27,7 @@ from fastapi import (
     status,
     Depends,
 )
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -64,6 +65,7 @@ OUTPUT_DIR = document_service.OUTPUT_DIR
 UPLOAD_DIR = document_service.UPLOAD_DIR
 UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
+FRONTEND_DIST_DIR = Path(__file__).parent / "frontend" / "dist"
 
 # ---------------- PYDANTIC MODELS ----------------
 
@@ -454,7 +456,20 @@ def _extract_stream_delta(chunk: Any) -> str:
 
 @app.get("/", tags=["General"])
 async def root():
-    """Root endpoint"""
+    """
+    Root endpoint.
+
+    In production, if the frontend has been built with Vite into
+    `frontend/dist`, serve the generated `index.html` so the React
+    single-page app is hosted on the same FastAPI server.
+
+    If the dist folder is missing (e.g. in development without a build),
+    fall back to returning a simple JSON description of the API.
+    """
+    index_path = FRONTEND_DIST_DIR / "index.html"
+    if index_path.exists():
+        return FileResponse(index_path)
+
     return {
         "message": "Document Processing API",
         "version": "1.0.0",
@@ -466,10 +481,31 @@ async def root():
             "query": "/query",
             "visualize": "/visualize/{document_id}",
             "page_summarize": "/page/{document_id}/summarize",
-            "economics_summary": "/economics/summary",
-        }
+        "economics_summary": "/economics/summary",
+        },
     }
 
+
+@app.get("/login", tags=["SPA"])
+async def login_page():
+    """
+    Serve the React SPA for the login route.
+    """
+    index_path = FRONTEND_DIST_DIR / "index.html"
+    if index_path.exists():
+        return FileResponse(index_path)
+    raise HTTPException(status_code=404, detail="Not Found")
+
+
+@app.get("/signup", tags=["SPA"])
+async def signup_page():
+    """
+    Serve the React SPA for the signup route.
+    """
+    index_path = FRONTEND_DIST_DIR / "index.html"
+    if index_path.exists():
+        return FileResponse(index_path)
+    raise HTTPException(status_code=404, detail="Not Found")
 
 @app.get("/health", response_model=HealthResponse, tags=["General"])
 async def health_check():
@@ -1495,11 +1531,25 @@ async def general_exception_handler(request, exc: Exception):
 # ---------------- MAIN ----------------
 
 
+# Serve built frontend static files (Vite `frontend/dist`) on the same server.
+# Mount just the assets folder so JS/CSS are served with correct MIME types.
+if FRONTEND_DIST_DIR.exists():
+    assets_dir = FRONTEND_DIST_DIR / "assets"
+    if assets_dir.exists():
+        app.mount(
+            "/assets",
+            StaticFiles(directory=assets_dir, html=False),
+            name="frontend_assets",
+        )
+else:
+    logger.warning("Frontend dist directory not found at %s", FRONTEND_DIST_DIR)
+
+
 if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=8000,
+        port=3091,
         reload=False,
         log_level="info",
     )

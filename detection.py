@@ -9,6 +9,7 @@ import logging
 import sys
 import re
 import json
+import os
 from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional
 
@@ -25,9 +26,20 @@ logging.getLogger("RapidOCR").setLevel(logging.ERROR)
 # resolution; (2) PDF pages are rendered by the backend at a fixed scale—raising
 # images_scale in the OCR pipeline improves PDF rendering resolution so it gets closer
 # to the image case.
-_PPOCRV5_DET = r"C:\Users\9421309441\.cache\modelscope\hub\models\RapidAI\RapidOCR\onnx\PP-OCRv5\det\ch_PP-OCRv5_server_det.onnx"
-_PPOCRV5_REC = r"C:\Users\9421309441\.cache\modelscope\hub\models\RapidAI\RapidOCR\onnx\PP-OCRv5\rec\ch_PP-OCRv5_rec_server_infer.onnx"
-_PPOCRV4_CLS = r"C:\Users\9421309441\.cache\modelscope\hub\models\RapidAI\RapidOCR\onnx\PP-OCRv4\cls\ch_ppocr_mobile_v2.0_cls_infer.onnx"
+# Paths are configurable via environment variables so the models can live anywhere.
+# If env vars are not set, we fall back to the original local defaults.
+_PPOCRV5_DET = os.getenv(
+    "_PPOCRV5_DET",
+    r"C:\Users\9421309441\.cache\modelscope\hub\models\RapidAI\RapidOCR\onnx\PP-OCRv5\det\ch_PP-OCRv5_server_det.onnx",
+)
+_PPOCRV5_REC = os.getenv(
+    "_PPOCRV5_REC",
+    r"C:\Users\9421309441\.cache\modelscope\hub\models\RapidAI\RapidOCR\onnx\PP-OCRv5\rec\ch_PP-OCRv5_rec_server_infer.onnx",
+)
+_PPOCRV4_CLS = os.getenv(
+    "_PPOCRV5_CLS",
+    r"C:\Users\9421309441\.cache\modelscope\hub\models\RapidAI\RapidOCR\onnx\PP-OCRv4\cls\ch_ppocr_mobile_v2.0_cls_infer.onnx",
+)
 
 # PDF page rendering scale for OCR (default 1.0). Higher values improve PDF text/layout quality.
 # Use 2.5 for a good balance; set to 3.0 if PDF output is still below image quality (more CPU/memory).

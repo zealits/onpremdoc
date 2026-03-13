@@ -1,0 +1,109 @@
+name: Node.js CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout the repository
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # Step 2: Set up Node.js environment
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: "20.x"
+
+      # Step 3: Install backend dependencies (root)
+      #   - name: Install backend dependencies
+      #     run: npm install --force
+      #     working-directory: .
+
+      # # Step 4: Install frontend dependencies
+      # - name: Install frontend dependencies
+      #   run: npm install --force
+      #   working-directory: ./frontend
+
+      # # Step 5: Build the frontend application
+      # - name: Build frontend application
+      #   run: npm run build
+      #   working-directory: ./frontend
+
+      # Step 6: Setup SSH for Deployment
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H 154.53.42.27 >> ~/.ssh/known_hosts
+
+      # Step 7: Deploy to the server
+      - name: Deploy to server
+        if: github.ref == 'refs/heads/main'
+        run: |
+          ssh admin@154.53.42.27 << 'EOF'
+           echo "🔐 Starting deployment to remote server"
+
+           if [ -f ~/onpremdoc/.env ]; then
+             echo "📁 Backing up existing .env file"
+             cp ~/onpremdoc/.env ~/.env.bak
+           fi
+
+           if [ -d ~/onpremdoc ]; then
+             echo "📂 Pulling latest changes from Git"
+             cd ~/onpremdoc
+             git reset --hard
+             git pull origin main
+           else
+             echo "📂 Cloning repository"
+             git clone https://github.com/zealits/onpremdoc ~/onpremdoc
+             cd ~/onpremdoc
+           fi
+
+           if [ -f ~/.env.bak ]; then
+             echo "♻️ Restoring .env from backup"
+             mv ~/.env.bak ~/onpremdoc/.env
+           fi
+
+           echo "📦 Installing backend dependencies"
+           cd ~/onpremdoc
+           if [ ! -d ".venv" ]; then
+             echo "🧱 Creating Python virtual environment"
+             python3 -m venv .venv
+           fi
+           source .venv/bin/activate
+           pip install --upgrade pip
+           if [ -f requirements.txt ]; then
+             pip install -r requirements.txt
+           fi
+           deactivate
+
+           echo "📦 Installing frontend dependencies"
+           cd ~/onpremdoc/frontend
+           npm install --force
+           echo "🛠️ Building frontend"
+           npm run build
+
+           echo "🚀 Starting or s restarting PM2 process"
+           cd ~/onpremdoc
+           source .venv/bin/activate
+           if pm2 list | grep -q "onpremdoc"; then
+             echo "🔁 Restarting onpremdoc"
+             pm2 restart onpremdoc
+           else
+             echo "▶️ Starting onpremdoc"
+             pm2 start uvicorn --name onpremdoc --interpreter python3 -- main:app --host 0.0.0.0 --port 3091 --workers 2
+           fi
+
+           echo "📋 PM2 process list:"
+           pm2 list
+          EOF
