@@ -412,17 +412,29 @@ function ChatPanel({
       <div className="flex flex-col h-full min-h-0 rounded-2xl theme-card shadow-[0_18px_60px_rgba(15,23,42,0.25)]">
         <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-4 pt-4 pb-2 space-y-4 column-scroll">
           {(showSummaryBlock == null ? documentSummary || (documentReady && isSummaryLoading) : showSummaryBlock) && (
-            <div className="document-summary mb-4 pb-4 border-b border-slate-600/60">
-              <h2 className="text-base font-semibold mb-1 text-inherit">{documentName || "Document"} summary</h2>
-              <p className="text-xs theme-sidebar-muted mb-2">1 source</p>
+            <div className="document-summary mb-6 pb-6 border-b border-slate-600/40">
+              <div className="flex items-center gap-2 mb-4">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow-sm">
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                </div>
+                <h2 className="text-lg font-semibold text-inherit">{documentName || "Document"} Summary</h2>
+              </div>
               {isSummaryLoading ? (
-                <div className="text-sm theme-sidebar-muted flex items-center gap-2">
-                  <span className="inline-block w-4 h-4 rounded-full border-2 border-indigo-400/60 border-t-indigo-300 animate-spin" />
-                  Loading summary…
+                <div className="flex items-center gap-3 py-8 theme-sidebar-muted">
+                  <span className="inline-block w-5 h-5 rounded-full border-2 border-indigo-400/60 border-t-indigo-300 animate-spin" />
+                  <span className="text-sm">Generating summary…</span>
                 </div>
               ) : (
-                <div className="text-sm leading-relaxed whitespace-pre-line max-w-none text-inherit">
-                  {documentSummary}
+                <div className="bg-gradient-to-br from-slate-800/50 to-slate-700/50 rounded-xl p-5 border border-slate-600/30">
+                  <div className="text-sm leading-7 space-y-4 text-inherit">
+                    {documentSummary?.split('\n\n').map((paragraph, index) => (
+                      <p key={index} className="text-gray-200 dark:text-gray-200 last:mb-0">
+                        {paragraph.trim()}
+                      </p>
+                    )) || documentSummary}
+                  </div>
                 </div>
               )}
             </div>

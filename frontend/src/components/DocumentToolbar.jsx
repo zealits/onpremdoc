@@ -3,6 +3,8 @@ import { useDocumentSummary, useExtractFromDocument, useEmailDocumentSummary, us
 import ExtractModal from './ExtractModal'
 import EmailModal from './EmailModal'
 import EconomicsPipelineModal from './EconomicsPipelineModal'
+import DocumentIndexModal from './DocumentIndexModal'
+import DocumentSummaryModal from './DocumentSummaryModal'
 
 export default function DocumentToolbar({
   documentId,
@@ -20,7 +22,7 @@ export default function DocumentToolbar({
   const [showIndexPanel, setShowIndexPanel] = useState(false)
 
   const { data: summaryData, refetch: refetchSummary, isFetching: summaryFetching } = useDocumentSummary(documentId, {
-    enabled: !!documentId && documentReady && showSummaryPanel,
+    enabled: !!documentId && documentReady,
   })
   const {
     data: pageRangesData,
@@ -57,7 +59,7 @@ export default function DocumentToolbar({
         {documentReady && (
           <button
             type="button"
-            onClick={() => setShowSummaryPanel((v) => !v)}
+            onClick={() => setShowSummaryPanel(true)}
             className="doc-toolbar-action-btn inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-sm transition-colors"
             title="Show summary"
           >
@@ -107,7 +109,7 @@ export default function DocumentToolbar({
         {documentReady && (
           <button
             type="button"
-            onClick={() => setShowIndexPanel((v) => !v)}
+            onClick={() => setShowIndexPanel(true)}
             className="doc-toolbar-action-btn inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-sm transition-colors"
             title="Show document index (sections)"
           >
@@ -124,171 +126,27 @@ export default function DocumentToolbar({
         )}
       </div>
 
-      {/* Summary panel (inline) */}
-      {showSummaryPanel && documentReady && (
-        <div className="w-full mt-2 p-3 rounded-xl border theme-card text-sm">
-          {loadingSummary ? (
-            <div className="flex items-center gap-2 theme-sidebar-muted">
-              <span className="inline-block w-4 h-4 rounded-full border-2 border-indigo-400/60 border-t-transparent animate-spin" />
-              Loading summary…
-            </div>
-          ) : (
-            <>
-              <div className="flex items-center justify-between gap-2 mb-2">
-                <span className="font-semibold text-inherit">Document summary</span>
-                <button
-                  type="button"
-                  onClick={() => setShowSummaryPanel(false)}
-                  className="theme-sidebar-muted hover:opacity-80"
-                  aria-label="Close"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-              <p className="whitespace-pre-line text-inherit leading-relaxed opacity-90">{displaySummary || 'No summary available.'}</p>
-              <button
-                type="button"
-                onClick={() => refetchSummary()}
-                className="mt-2 text-xs text-indigo-400 hover:text-indigo-300"
-              >
-                Refresh summary
-              </button>
-            </>
-          )}
-        </div>
-      )}
+      {/* Document Summary Modal */}
+      <DocumentSummaryModal
+        isOpen={showSummaryPanel && documentReady}
+        onClose={() => setShowSummaryPanel(false)}
+        summaryData={summaryData}
+        summaryText={summaryText}
+        isSummaryLoading={isSummaryLoading}
+        summaryFetching={summaryFetching}
+        refetchSummary={refetchSummary}
+        documentName={documentName}
+      />
 
-      {/* Index / page ranges panel */}
-      {showIndexPanel && documentReady && (
-        <div className="index-panel w-full mt-2 rounded-xl border theme-card overflow-hidden shadow-lg">
-          <div className="index-panel-header flex items-center justify-between gap-3 px-4 py-3 border-b theme-sidebar">
-            <div className="flex items-center gap-2">
-              <div className="index-panel-icon flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-500/15 text-indigo-400">
-                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h7" />
-                </svg>
-              </div>
-              <div>
-                <h3 className="text-sm font-semibold text-inherit">Document index</h3>
-                <p className="text-[11px] theme-sidebar-muted">Section summaries by page range</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => refetchPageRanges()}
-                disabled={pageRangesFetching}
-                className="index-panel-refresh rounded-lg px-2.5 py-1.5 text-xs font-medium theme-sidebar-muted hover:bg-indigo-500/10 hover:text-indigo-400 transition-colors disabled:opacity-50"
-                title="Refresh index"
-              >
-                <span className="sr-only">Refresh</span>
-                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M16 4v4m0 0h-4m4 0H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2V8a2 2 0 00-2-2h-2" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowIndexPanel(false)}
-                className="rounded-lg p-1.5 theme-sidebar-muted hover:bg-black/10 dark:hover:bg-white/10 transition-colors"
-                aria-label="Close index"
-              >
-                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-          </div>
-          <div className="index-panel-body max-h-72 overflow-y-auto px-3 py-3 theme-card">
-            {pageRangesFetching && (
-              <div className="flex flex-col items-center justify-center gap-3 py-8 theme-sidebar-muted">
-                <span className="inline-block h-8 w-8 rounded-full border-2 border-indigo-400/60 border-t-transparent animate-spin" />
-                <span className="text-sm">Loading index…</span>
-              </div>
-            )}
-            {pageRangesError && !pageRangesFetching && (
-              <div className="index-panel-error flex flex-col items-center gap-2 py-6 px-4 rounded-xl bg-red-500/10 border border-red-500/20 text-center">
-                <svg className="h-10 w-10 text-red-400/80" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                </svg>
-                <p className="text-sm font-medium text-red-400">Could not load index</p>
-                <p className="text-xs text-red-400/80">Try again or ensure the document is fully processed.</p>
-                <button
-                  type="button"
-                  onClick={() => refetchPageRanges()}
-                  className="mt-1 rounded-lg bg-red-500/20 px-3 py-1.5 text-xs font-medium text-red-300 hover:bg-red-500/30 transition-colors"
-                >
-                  Retry
-                </button>
-              </div>
-            )}
-            {!pageRangesFetching && !pageRangesError && Array.isArray(pageRangesData) && pageRangesData.length > 0 && (
-              <div className="index-table w-full text-xs sm:text-sm">
-                <div className="hidden sm:grid grid-cols-[auto_auto_minmax(0,0.9fr)_minmax(0,1.6fr)] gap-x-3 gap-y-1 px-4 pb-2 text-[11px] font-medium uppercase tracking-wide theme-sidebar-muted">
-                  <span className="pl-3">#</span>
-                  <span className="pl-4">Pages</span>
-                  <span className="pl-2">Title</span>
-                  <span className="pl-1">Summary</span>
-                </div>
-                <ul className="index-list space-y-2" role="list">
-                  {pageRangesData.map((r, idx) => (
-                    <li
-                      key={`${r.start_page}-${r.end_page}-${idx}`}
-                      className="index-row group relative rounded-lg border theme-sidebar px-3 py-2.5 sm:py-2 hover:border-indigo-400/40 hover:bg-indigo-500/5 transition-colors"
-                    >
-                      <div className="grid grid-cols-[auto_minmax(0,1fr)] sm:grid-cols-[auto_auto_minmax(0,0.9fr)_minmax(0,1.6fr)] gap-x-3 gap-y-1 items-start">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className="index-section-num flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-indigo-500/20 text-[11px] font-bold text-indigo-400"
-                            aria-hidden
-                          >
-                            {idx + 1}
-                          </span>
-                        </div>
-                        <div className="sm:hidden col-start-2 text-[11px] theme-sidebar-muted">
-                          pp. {r.start_page}–{r.end_page}
-                        </div>
-                        <div className="hidden sm:flex items-center">
-                          <span className="index-page-badge inline-flex items-center gap-1 rounded-full border border-indigo-400/30 bg-indigo-500/10 px-2.5 py-0.5 text-[11px] font-medium text-indigo-300">
-                            <svg className="h-3 w-3 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                            </svg>
-                            pp. {r.start_page}–{r.end_page}
-                          </span>
-                        </div>
-                        <div className="col-span-1 sm:col-span-1">
-                          {r.title && r.title.trim() ? (
-                            <p className="index-title font-semibold text-inherit leading-snug">
-                              {r.title}
-                            </p>
-                          ) : (
-                            <p className="index-title italic theme-sidebar-muted leading-snug">Untitled section</p>
-                          )}
-                        </div>
-                        <div className="col-span-2 sm:col-span-1">
-                          <p className="index-summary text-[12px] sm:text-sm leading-relaxed text-inherit opacity-95">
-                            {r.summary}
-                          </p>
-                        </div>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {!pageRangesFetching && !pageRangesError && Array.isArray(pageRangesData) && pageRangesData.length === 0 && (
-              <div className="flex flex-col items-center gap-2 py-8 theme-sidebar-muted text-center">
-                <svg className="h-12 w-12 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                <p className="text-sm font-medium">No index available</p>
-                <p className="text-xs max-w-[240px]">This document has no section summaries yet. Process it to generate an index.</p>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      {/* Document Index Modal */}
+      <DocumentIndexModal
+        isOpen={showIndexPanel && documentReady}
+        onClose={() => setShowIndexPanel(false)}
+        pageRangesData={pageRangesData}
+        pageRangesFetching={pageRangesFetching}
+        pageRangesError={pageRangesError}
+        refetchPageRanges={refetchPageRanges}
+      />
 
       {showExtract && (
         <ExtractModal
