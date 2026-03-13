@@ -1,15 +1,14 @@
 import React, { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import { queryDocumentStream } from "../api/client";
+import { useDocument } from "../api/hooks";
 
 const DEFAULT_SUGGESTED = ["What is this document about?", "Summarize the main points."];
 
-function ProcessingInterface({ documentName }) {
-  const [currentStep, setCurrentStep] = useState(0);
-  
+function ProcessingInterface({ documentName, documentStatus }) {
   const steps = [
     {
-      id: "upload",
+      id: "uploaded",
       title: "Processing Document",
       description: "Analyzing file structure and content",
       icon: (
@@ -19,7 +18,7 @@ function ProcessingInterface({ documentName }) {
       )
     },
     {
-      id: "extract",
+      id: "processing",
       title: "Extracting Content",
       description: "Reading text and extracting key information",
       icon: (
@@ -29,7 +28,7 @@ function ProcessingInterface({ documentName }) {
       )
     },
     {
-      id: "vectorize",
+      id: "vectorized",
       title: "Creating Embeddings",
       description: "Converting content into searchable vectors",
       icon: (
@@ -39,7 +38,7 @@ function ProcessingInterface({ documentName }) {
       )
     },
     {
-      id: "prepare",
+      id: "ready",
       title: "Preparing Chat",
       description: "Setting up AI assistant for conversations",
       icon: (
@@ -50,14 +49,9 @@ function ProcessingInterface({ documentName }) {
     }
   ];
 
-  // Cycle through steps automatically
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setCurrentStep((prev) => (prev + 1) % steps.length);
-    }, 2500);
-    
-    return () => clearInterval(interval);
-  }, [steps.length]);
+  // Map status to step index
+  const currentStepIndex = steps.findIndex(step => step.id === documentStatus);
+  const currentStep = currentStepIndex >= 0 ? currentStepIndex : 0;
 
   return (
     <div className="flex flex-col h-full items-center justify-center p-8 theme-main border-l theme-card">
@@ -147,9 +141,9 @@ function ProcessingInterface({ documentName }) {
           />
         </div>
         
-        <p className="theme-sidebar-muted text-xs mt-4 opacity-75">
+        {/* <p className="theme-sidebar-muted text-xs mt-4 opacity-75">
           This usually takes 30-60 seconds depending on document size
-        </p>
+        </p> */}
       </div>
     </div>
   );
@@ -283,6 +277,8 @@ function ChatPanel({
   showSummaryBlock,
   onHighlightChunk,
 }) {
+  // Get document data to track processing status
+  const { data: documentData } = useDocument(documentId);
   const suggested =
     Array.isArray(suggestedQueries) && suggestedQueries.length > 0 ? suggestedQueries : DEFAULT_SUGGESTED;
   const [messages, setMessages] = useState([]);
@@ -557,7 +553,10 @@ function ChatPanel({
 
   if (!documentReady) {
     return (
-      <ProcessingInterface documentName={documentName} />
+      <ProcessingInterface 
+        documentName={documentName} 
+        documentStatus={documentData?.status || "uploaded"} 
+      />
     );
   }
 
