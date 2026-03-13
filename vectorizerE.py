@@ -67,7 +67,8 @@ LLM_MAX_TOKENS = 8192
 LLM_OPTIMAL_TOKENS = 4000
 
 # Character limits
-EMBEDDING_MAX_CHARS = 2000
+# Reduced to 1000 so each chunk is smaller and more tightly scoped
+EMBEDDING_MAX_CHARS = 1000
 CHUNK_SIZE = EMBEDDING_MAX_CHARS
 CHUNK_OVERLAP = 150
 
@@ -610,32 +611,45 @@ def compute_effective_chunk_size(total_chars: int) -> int:
 
 
 def is_chunk_empty(chunk: Document) -> bool:
-    """Check if a chunk is empty or has minimal content (only headers, whitespace, etc.)"""
-    content = chunk.page_content.strip()
+    """
+    Check if a chunk is effectively empty of real text.
     
-    # Empty or only whitespace
-    if not content or len(content) < 10:
+    This is deliberately conservative so that:
+    - Long single-line paragraphs (like the Waiting Period clause) are kept.
+    - Chunks that only contain headings, page breaks, images or whitespace are removed.
+    """
+    content = chunk.page_content or ""
+    content = content.strip()
+    if not content:
         return True
-    
-    # Count non-header, non-whitespace lines
+
     lines = content.split("\n")
-    meaningful_lines = []
+    text_lines = []
     for line in lines:
         stripped = line.strip()
-        # Skip empty lines, headers, and horizontal rules
-        if stripped and not stripped.startswith("#") and not re.match(r'^[-=*]{3,}$', stripped):
-            meaningful_lines.append(stripped)
-    
-    # If we have less than 2 meaningful lines or very short content, consider it empty
-    if len(meaningful_lines) < 2:
+        if not stripped:
+            continue
+        # Skip markdown headings
+        if stripped.startswith("#"):
+            continue
+        # Skip horizontal rules
+        if re.match(r'^[-=*]{3,}$', stripped):
+            continue
+        # Skip common non-text markers from our pipeline
+        if stripped.startswith("<!--") and stripped.endswith("-->"):
+            # e.g. <!-- page break -->, <!-- image -->
+            continue
+        text_lines.append(stripped)
+
+    if not text_lines:
         return True
-    
-    # Check if meaningful content is too short (less than 50 chars of actual text)
-    meaningful_text = " ".join(meaningful_lines)
-    if len(meaningful_text) < 50:
-        return True
-    
-    return False
+
+    # If there's at least one line with alphanumeric content, keep the chunk
+    meaningful_text = " ".join(text_lines)
+    if re.search(r"[A-Za-z0-9]", meaningful_text):
+        return False
+
+    return True
 
 def parse_markdown_enhanced(markdown_content: str, page_mapping: Optional[Dict[str, Any]] = None) -> Tuple[List[Document], Dict[str, Any]]:
     """Parse markdown with structure awareness and enhanced metadata"""
@@ -674,86 +688,143 @@ def parse_markdown_enhanced(markdown_content: str, page_mapping: Optional[Dict[s
             logger.warning("Page mapping provided but line_to_page is empty")
     
     lines = markdown_content.split("\n")
-    chunks = []
-    current_chunk_lines = []
-    current_chunk_size = 0
+    total_lines = len(lines)
+
+    # Helper to decide if a line should be treated as "real text"
+    def is_text_line(s: str) -> bool:
+        stripped = s.strip()
+        if not stripped:
+            return False
+        # Ignore markdown headings
+        if stripped.startswith("#"):
+            return False
+        # Ignore HTML comments like <!-- page break -->, <!-- image -->
+        if stripped.startswith("<!--") and stripped.endswith("-->"):
+            return False
+        # Ignore pure separators
+        if re.match(r'^[-=*]{3,}$', stripped):
+            return False
+        # Otherwise, any line with alphanumeric or bullet text counts as text
+        return bool(re.search(r"[A-Za-z0-9]", stripped))
+
+    chunks: List[Document] = []
     chunk_index = 0
-    current_section = None
-    current_section_path = ""
-    
-    for line_num, line in enumerate(lines, 1):
-        # Update current section as we process lines
-        section = get_section_for_line(line_num, structure)
-        if section and section != current_section:
-            current_section = section
-            current_section_path = section["path"]
-        
-        is_header = bool(re.match(r'^#+\s+', line.strip()))
-        
-        line_with_newline = line + "\n"
-        line_size = len(line_with_newline)
-        
-        if current_chunk_size + line_size > effective_chunk_size and current_chunk_lines:
+
+    # We now build chunks per-heading:
+    # - For each heading (from the structure), look at the lines until the next heading.
+    # - Skip ranges that have no real text (only page breaks/images/etc.).
+    # - Within a heading's text range, split into sub-chunks of ~effective_chunk_size chars.
+    headers = sorted(structure["headers"], key=lambda h: h["line"])
+
+    for idx, header in enumerate(headers):
+        header_line = header["line"]
+        section = {
+            "path": header["section_path"],
+            "title": header["title"],
+            "level": header["level"],
+            "start_line": header_line,
+        }
+
+        # Determine end of this heading's region: just before the next heading,
+        # or end of document if this is the last heading.
+        if idx + 1 < len(headers):
+            next_header_line = headers[idx + 1]["line"]
+            region_start = header_line + 1
+            region_end = next_header_line - 1
+        else:
+            region_start = header_line + 1
+            region_end = total_lines
+
+        if region_start > region_end or region_start < 1 or region_end > total_lines:
+            continue
+
+        # Collect lines in this heading's region, but track whether there is any real text.
+        region_lines_with_numbers: List[Tuple[int, str]] = []
+        has_real_text = False
+        for ln in range(region_start, region_end + 1):
+            line_text = lines[ln - 1]
+            region_lines_with_numbers.append((ln, line_text))
+            if is_text_line(line_text):
+                has_real_text = True
+
+        # If the region only has page breaks/images/etc., skip creating any chunk for this heading.
+        if not has_real_text:
+            continue
+
+        # Now build one or more chunks for this heading, with max ~effective_chunk_size chars.
+        current_chunk_lines: List[str] = []
+        current_chunk_start_line: Optional[int] = None
+        current_size = 0
+
+        for line_number, text in region_lines_with_numbers:
+            # We still include non-text lines in the chunk (for context), but they
+            # do not by themselves cause us to create a chunk for an otherwise empty heading.
+            raw = text + "\n"
+            
+            # If a single logical line is longer than the effective chunk size,
+            # we split it across multiple chunks so that every character is
+            # vectorised somewhere, and no individual chunk exceeds the limit.
+            while raw:
+                if current_chunk_start_line is None:
+                    current_chunk_start_line = line_number
+                
+                remaining_capacity = effective_chunk_size - current_size if current_size > 0 else effective_chunk_size
+                
+                # If the remaining capacity can hold the rest of this line, append and move on.
+                if len(raw) <= remaining_capacity:
+                    current_chunk_lines.append(raw)
+                    current_size += len(raw)
+                    raw = ""
+                else:
+                    # Take a slice that fits in the current chunk.
+                    piece = raw[:remaining_capacity]
+                    current_chunk_lines.append(piece)
+                    current_size += len(piece)
+                    raw = raw[remaining_capacity:]
+                    
+                    # Flush the full chunk.
+                    chunk_text = "".join(current_chunk_lines)
+                    page_number = None
+                    if line_to_page and current_chunk_start_line > 0 and current_chunk_start_line <= len(line_to_page):
+                        page_number = line_to_page[current_chunk_start_line - 1]
+                    
+                    chunk = create_enhanced_chunk(
+                        chunk_text,
+                        chunk_index,
+                        section["path"],
+                        section,
+                        structure,
+                        current_chunk_start_line,
+                        page_number,
+                    )
+                    chunks.append(chunk)
+                    chunk_index += 1
+                    
+                    # Start a new chunk that continues the same logical line.
+                    current_chunk_lines = []
+                    current_chunk_start_line = line_number
+                    current_size = 0
+
+        # Flush any remaining lines for this heading.
+        if current_chunk_lines:
             chunk_text = "".join(current_chunk_lines)
-            chunk_start_line = line_num - len(current_chunk_lines)
+            start_ln = current_chunk_start_line or region_start
             
-            # Get the section for the CHUNK'S START LINE (not current line)
-            # This ensures chunks are assigned to the correct section
-            chunk_section = get_section_for_line(chunk_start_line, structure)
-            chunk_section_path = chunk_section["path"] if chunk_section else ""
-            
-            # Determine page number for this chunk (use start line's page)
             page_number = None
-            if line_to_page and chunk_start_line > 0 and chunk_start_line <= len(line_to_page):
-                page_number = line_to_page[chunk_start_line - 1]  # Convert to 0-based index
+            if line_to_page and start_ln > 0 and start_ln <= len(line_to_page):
+                page_number = line_to_page[start_ln - 1]
+            
             chunk = create_enhanced_chunk(
                 chunk_text,
                 chunk_index,
-                chunk_section_path,
-                chunk_section,
+                section["path"],
+                section,
                 structure,
-                chunk_start_line,
-                page_number
+                start_ln,
+                page_number,
             )
             chunks.append(chunk)
             chunk_index += 1
-            
-            # Calculate minimal overlap: use only 1-2 lines for context
-            # Overlap should be minimal to avoid duplicate content
-            # Use maximum 2 lines or ~5% of chunk, whichever is smaller
-            overlap_size = min(max(1, len(current_chunk_lines) // 20), 2)
-            overlap_lines = current_chunk_lines[-overlap_size:] if len(current_chunk_lines) > overlap_size else []
-            
-            # Reset for next chunk with minimal overlap
-            current_chunk_lines = overlap_lines
-            current_chunk_size = sum(len(l) for l in current_chunk_lines)
-        
-        current_chunk_lines.append(line_with_newline)
-        current_chunk_size += line_size
-    
-    if current_chunk_lines:
-        chunk_text = "".join(current_chunk_lines)
-        chunk_start_line = len(lines) - len(current_chunk_lines)
-        
-        # Get the section for the CHUNK'S START LINE (not current line)
-        # This ensures chunks are assigned to the correct section
-        chunk_section = get_section_for_line(chunk_start_line, structure)
-        chunk_section_path = chunk_section["path"] if chunk_section else ""
-        
-        # Determine page number for this chunk
-        page_number = None
-        if line_to_page and chunk_start_line > 0 and chunk_start_line <= len(line_to_page):
-            page_number = line_to_page[chunk_start_line - 1]  # Convert to 0-based index
-        chunk = create_enhanced_chunk(
-            chunk_text,
-            chunk_index,
-            chunk_section_path,
-            chunk_section,
-            structure,
-            chunk_start_line,
-            page_number
-        )
-        chunks.append(chunk)
     
     # Filter out empty chunks and duplicate chunks before adding adjacency metadata.
     # Duplicate detection uses a Jaccard similarity ≥ 0.90 over the first ~1500
@@ -1800,11 +1871,12 @@ Return ONLY the summary text, with no JSON, no bullet points, and no extra comme
         # No chunk summary (not used downstream); keep key for compatibility
         summary = ""
         
-        # Prepare content for embedding (keep exact markdown slice for vector_mapping searchability)
-        original_content = chunk.page_content  # exact substring of markdown, never truncated in JSON
-        content = original_content
-        original_length = len(content)
+        # Prepare content for embedding. From this point on, "content" is the
+        # canonical text for both embeddings and JSON mapping so that the
+        # vector_mapping file is an exact reflection of what was embedded.
+        content = chunk.page_content
         content, was_truncated = token_tracker.check_embedding_limit(content)
+        original_length = len(content)
         
         # Prepare metadata for Chroma
         prev_chunk_ids = chunk.metadata.get("prev_chunk_ids", [])
@@ -1885,8 +1957,9 @@ Return ONLY the summary text, with no JSON, no bullet points, and no extra comme
         full_metadata = chroma_metadata.copy()
         full_metadata["prev_chunk_ids"] = prev_chunk_ids
         full_metadata["next_chunk_ids"] = next_chunk_ids
-        # Store content as list of lines so JSON has no literal \n — exact match when joined and searchable in .md
-        content_lines = original_content.split("\n")
+        # Store content as list of lines so JSON has no literal \n — this is
+        # now an exact copy of the text that was embedded.
+        content_lines = content.split("\n")
         start_ln = int(chunk.metadata.get("start_line", 0))
         full_metadata["end_line"] = (start_ln + len(content_lines) - 1) if content_lines else start_ln
 
@@ -1896,7 +1969,7 @@ Return ONLY the summary text, with no JSON, no bullet points, and no extra comme
             "summary": summary,
             "section_path": section_path,
             "content": content_lines,
-            "content_length": len(original_content),
+            "content_length": len(content),
             "metadata": full_metadata
         }
         

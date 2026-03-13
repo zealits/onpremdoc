@@ -44,6 +44,17 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("langchain").setLevel(logging.WARNING)
 logging.getLogger("langchain_community").setLevel(logging.WARNING)
 
+# ---------------- RETRIEVAL CONFIG ----------------
+# All numeric constants for the retrieval pipeline live here so behavior is easy to tune.
+INITIAL_VECTOR_SEARCH_K = 5          # Top-K for initial vector search
+NUM_SEEDS_TO_EXPAND = 2              # How many top seeds to expand
+EXPANSION_PER_SEED = 10              # Target expanded neighbors per seed (before rerank)
+RERANK_TOP_K = 5                     # Top-K per seed after vector rerank
+RERANK_SEARCH_K = 64                 # How many neighbors to look at when reranking
+FINAL_CHUNKS_FOR_LLM = 15            # Total chunks sent to LLM (initial + expanded)
+SECOND_VECTOR_SEARCH_K = 5           # Top-K for second retrieval vector search
+SEED_SIMILARITY_THRESHOLD = 0.3      # Optional seed quality threshold for logging/debug
+
 # ---------------- DOCUMENT GRAPH ---------------- 
 class DocumentGraph:
     """Knowledge graph for document structure"""
@@ -157,6 +168,70 @@ class DocumentGraph:
                         chunk_ids.append(chunk_id)
         
         return sorted(chunk_ids)
+
+    def get_page_for_chunk(self, chunk_id: int) -> Optional[int]:
+        """Get page number for a chunk via 'on_page' edges."""
+        chunk_node = self.chunk_nodes.get(chunk_id)
+        if not chunk_node:
+            return None
+
+        for predecessor in self.graph.predecessors(chunk_node):
+            if self.graph.nodes[predecessor].get("type") == "page":
+                edge_data = self.graph.get_edge_data(predecessor, chunk_node)
+                if edge_data and edge_data.get("relation") == "on_page":
+                    return self.graph.nodes[predecessor].get("page_number")
+
+        return None
+
+    def expand_from_single_chunk_prioritized(self, chunk_id: int, max_expansion: int = 10) -> List[int]:
+        """
+        Expand from a single seed chunk with priority:
+        1) similar_to neighbors
+        2) chunks in the same section
+        3) chunks on the same page
+        The seed chunk itself is excluded from the result.
+        """
+        if max_expansion <= 0:
+            return []
+
+        result: List[int] = []
+        seen: set[int] = set()
+
+        # Helper to add candidates in order without duplicates and without exceeding max_expansion
+        def _add_candidates(candidates: List[int]) -> None:
+            for cid in candidates:
+                if cid == chunk_id:
+                    continue
+                if cid in seen:
+                    continue
+                seen.add(cid)
+                result.append(cid)
+                if len(result) >= max_expansion:
+                    break
+
+        # 1) Similar chunks
+        similar_ids = self.get_similar_chunks(chunk_id)
+        _add_candidates(similar_ids)
+        if len(result) >= max_expansion:
+            return result
+
+        # 2) Same section chunks
+        section_node = self.get_parent_section(chunk_id)
+        if section_node:
+            section_path = self.graph.nodes[section_node].get("section_path", "")
+            if section_path:
+                section_chunks = self.get_section_chunks(section_path)
+                _add_candidates(section_chunks)
+                if len(result) >= max_expansion:
+                    return result
+
+        # 3) Same page chunks
+        page_number = self.get_page_for_chunk(chunk_id)
+        if page_number is not None:
+            page_chunks = self.get_page_chunks(page_number)
+            _add_candidates(page_chunks)
+
+        return result[:max_expansion]
     
     def expand_from_chunks(self, chunk_ids: List[int], max_expansion: int = 30) -> List[int]:
         """Expand retrieval by following graph edges from seed chunks"""
@@ -269,6 +344,8 @@ class AgentState(TypedDict):
     past_messages: Optional[List[Dict[str, Any]]]
     # When True, answer from session context only (no retrieval).
     is_use_history: Optional[bool]
+    # Chunk indices that most strongly support the final answer (post-hoc grounding).
+    chunk_indices_used_for_answer: Optional[List[int]]
 
 # ---------------- TOKEN USAGE HELPERS (economics) ----------------
 def _est_tokens(text: str) -> int:
@@ -649,20 +726,20 @@ def distance_to_similarity(distance: float, scale_factor: float = 150.0) -> floa
     return max(0.0, min(1.0, similarity))
 
 def initial_retrieval(state: AgentState) -> AgentState:
-    """Initial retrieval: vector search + selective graph expansion"""
+    """Initial retrieval: vector search + prioritized expansion for top seeds + vector rerank."""
     query = state["query"]
     vector_store = _vector_store
     document_graph = _document_graph
     
     logger.info(f"Initial graph-enhanced retrieval for query: '{query}'")
     
-    # Step 1: Vector similarity search (get seed chunks) - increased k for better recall
-    seed_chunk_ids = []
-    seed_chunk_scores = {}
-    seed_chunks_with_scores = []
-    
+    # Step 1: Vector similarity search (get seed chunks)
+    seed_chunk_ids: List[int] = []
+    seed_chunk_scores: Dict[int, float] = {}
+    seed_chunks_with_scores: List[tuple[int, float, float]] = []  # (chunk_id, similarity_score, distance)
+
     try:
-        vector_results = vector_store.similarity_search_with_score(query, k=20)  # Increased from 8 to 20
+        vector_results = vector_store.similarity_search_with_score(query, k=INITIAL_VECTOR_SEARCH_K)
         for doc, distance in vector_results:
             chunk_id = doc.metadata.get("chunk_index")
             if chunk_id is not None:
@@ -673,59 +750,150 @@ def initial_retrieval(state: AgentState) -> AgentState:
                 logger.debug(f"  Seed chunk {chunk_id} (distance: {distance:.3f}, similarity: {similarity_score:.3f})")
     except Exception as e:
         logger.warning(f"Vector search error: {e}")
-    
-    logger.info(f"Found {len(seed_chunk_ids)} seed chunks from vector search")
-    
+
+    logger.info(f"Found {len(seed_chunk_ids)} seed chunks from vector search (k={INITIAL_VECTOR_SEARCH_K})")
+
     # Economics: query embedding for vector search
     _append_token_usage(state, "initial_retrieval", embedding_tokens=_est_tokens(query))
-    
-    # Step 2: Filter seed chunks by similarity threshold and select top-k for expansion
-    SIMILARITY_THRESHOLD = 0.3  # Minimum similarity to consider
-    TOP_SEEDS_FOR_EXPANSION = 5  # Only expand from top 5 most relevant seeds
-    
+
     # Sort by similarity score (descending)
     seed_chunks_with_scores.sort(reverse=True, key=lambda x: x[1])
-    
-    # Filter by threshold
-    high_quality_seeds = [chunk_id for chunk_id, score, _ in seed_chunks_with_scores if score >= SIMILARITY_THRESHOLD]
-    
-    # Select top-k seeds for graph expansion (only most relevant)
-    top_seeds_for_expansion = [chunk_id for chunk_id, _, _ in seed_chunks_with_scores[:TOP_SEEDS_FOR_EXPANSION]]
-    
-    logger.info(f"High quality seeds (score >= {SIMILARITY_THRESHOLD}): {len(high_quality_seeds)}")
-    logger.info(f"Top {TOP_SEEDS_FOR_EXPANSION} seeds selected for graph expansion: {top_seeds_for_expansion}")
-    
-    # Step 3: Selective graph expansion - only from top relevant seeds
-    graph_expanded_ids = []
+
+    # Optional: count high-quality seeds for debug (threshold does not affect behavior directly)
+    high_quality_seeds = [chunk_id for chunk_id, score, _ in seed_chunks_with_scores if score >= SEED_SIMILARITY_THRESHOLD]
+    logger.info(f"High quality seeds (score >= {SEED_SIMILARITY_THRESHOLD}): {len(high_quality_seeds)}")
+
+    # Initial top-5 seeds used directly as starting context
+    initial_top_ids = [chunk_id for chunk_id, _, _ in seed_chunks_with_scores[:INITIAL_VECTOR_SEARCH_K]]
+
+    # Build mapping from chunk_index -> Document
+    chunk_dict: Dict[int, Document] = {chunk.metadata.get("chunk_index"): chunk for chunk in _chunks}
+
+    initial_top_docs: List[Document] = []
+    for cid in initial_top_ids:
+        if cid in chunk_dict:
+            initial_top_docs.append(chunk_dict[cid])
+
+    # Prepare rerank scores storage
+    rerank_scores: Dict[int, float] = {}
+
+    # Helper: vector-based rerank within a candidate set for a given seed
+    def _rerank_for_seed(seed_id: int, expanded_ids: List[int]) -> List[Document]:
+        if seed_id is None or not expanded_ids:
+            return []
+
+        seed_doc = chunk_dict.get(seed_id)
+        if not seed_doc:
+            return []
+
+        expanded_set = set(expanded_ids)
+        candidates: List[tuple[int, float]] = []  # (chunk_id, similarity)
+
+        try:
+            # Use seed content as the query into the same vector space
+            search_k = max(RERANK_SEARCH_K, len(expanded_set))
+            vr = vector_store.similarity_search_with_score(seed_doc.page_content, k=search_k)
+            for doc, distance in vr:
+                cid = doc.metadata.get("chunk_index")
+                if cid is None or cid not in expanded_set:
+                    continue
+                sim = distance_to_similarity(distance)
+                candidates.append((cid, sim))
+        except Exception as exc:
+            logger.warning(f"Vector rerank error for seed {seed_id}: {exc}")
+            return []
+
+        # Sort candidates by similarity (desc) and take top-K
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        top_ids: List[int] = []
+        for cid, sim in candidates:
+            if cid in rerank_scores:
+                # Keep the max similarity across seeds if a chunk is reused
+                rerank_scores[cid] = max(rerank_scores[cid], sim)
+            else:
+                rerank_scores[cid] = sim
+            top_ids.append(cid)
+            if len(top_ids) >= RERANK_TOP_K:
+                break
+
+        return [chunk_dict[cid] for cid in top_ids if cid in chunk_dict]
+
+    # Step 2: prioritized expansion and rerank for top seeds
+    graph_expanded_ids: List[int] = []
+    top_seeds_for_expansion = [chunk_id for chunk_id, _, _ in seed_chunks_with_scores[:NUM_SEEDS_TO_EXPAND]]
+
+    seed1_expanded_docs: List[Document] = []
+    seed2_expanded_docs: List[Document] = []
+
     if top_seeds_for_expansion:
-        # Use reduced max_expansion since we're being more selective
-        graph_expanded_ids = document_graph.expand_from_chunks(top_seeds_for_expansion, max_expansion=15)
-        logger.info(f"Graph expansion from top seeds: {len(graph_expanded_ids)} additional chunks")
+        logger.info(f"Top {NUM_SEEDS_TO_EXPAND} seeds selected for prioritized expansion: {top_seeds_for_expansion}")
+
+        if len(top_seeds_for_expansion) >= 1:
+            seed1_id = top_seeds_for_expansion[0]
+            expanded_1 = document_graph.expand_from_single_chunk_prioritized(seed1_id, max_expansion=EXPANSION_PER_SEED)
+            logger.info(f"Seed {seed1_id}: prioritized expansion produced {len(expanded_1)} candidates")
+            graph_expanded_ids.extend(expanded_1)
+            seed1_expanded_docs = _rerank_for_seed(seed1_id, expanded_1)
+
+        if len(top_seeds_for_expansion) >= 2:
+            seed2_id = top_seeds_for_expansion[1]
+            expanded_2 = document_graph.expand_from_single_chunk_prioritized(seed2_id, max_expansion=EXPANSION_PER_SEED)
+            logger.info(f"Seed {seed2_id}: prioritized expansion produced {len(expanded_2)} candidates")
+            graph_expanded_ids.extend(expanded_2)
+            seed2_expanded_docs = _rerank_for_seed(seed2_id, expanded_2)
     else:
-        logger.warning("No high-quality seeds for graph expansion")
-    
-    # Combine seed and expanded (prioritize seed chunks)
-    all_chunk_ids = list(set(seed_chunk_ids + graph_expanded_ids))
-    logger.info(f"Total chunks after expansion: {len(all_chunk_ids)} (seeds: {len(seed_chunk_ids)}, expanded: {len(graph_expanded_ids)})")
-    
-    # Get actual Document objects
-    retrieved_chunks = []
-    chunk_dict = {chunk.metadata.get("chunk_index"): chunk for chunk in _chunks}
-    for chunk_id in all_chunk_ids:
-        if chunk_id in chunk_dict:
-            retrieved_chunks.append(chunk_dict[chunk_id])
-    
-    # Cap chunks used (no re-ranking)
-    MAX_INITIAL_CHUNKS = 25
-    chunks_used = retrieved_chunks[:MAX_INITIAL_CHUNKS]
-    
+        logger.warning("No seeds available for prioritized expansion")
+
+    # Step 3: build final chunk list:
+    # first 5 initial chunks + top similar chunks of seed1 + top similar chunks of seed2
+    seen_ids: set[int] = set()
+    chunks_used: List[Document] = []
+
+    # Initial 5
+    for doc in initial_top_docs:
+        cid = doc.metadata.get("chunk_index")
+        if cid is None or cid in seen_ids:
+            continue
+        seen_ids.add(cid)
+        chunks_used.append(doc)
+
+    # Top from seed 1
+    for doc in seed1_expanded_docs:
+        cid = doc.metadata.get("chunk_index")
+        if cid is None or cid in seen_ids:
+            continue
+        seen_ids.add(cid)
+        chunks_used.append(doc)
+        if len(chunks_used) >= FINAL_CHUNKS_FOR_LLM:
+            break
+
+    # Top from seed 2
+    if len(chunks_used) < FINAL_CHUNKS_FOR_LLM:
+        for doc in seed2_expanded_docs:
+            cid = doc.metadata.get("chunk_index")
+            if cid is None or cid in seen_ids:
+                continue
+            seen_ids.add(cid)
+            chunks_used.append(doc)
+            if len(chunks_used) >= FINAL_CHUNKS_FOR_LLM:
+                break
+
+    # Enforce final cap
+    if len(chunks_used) > FINAL_CHUNKS_FOR_LLM:
+        chunks_used = chunks_used[:FINAL_CHUNKS_FOR_LLM]
+
+    logger.info(f"Initial retrieval built {len(chunks_used)} chunks (target {FINAL_CHUNKS_FOR_LLM})")
+
     # Update state
     state["seed_chunk_ids"] = seed_chunk_ids
     state["seed_chunk_scores"] = seed_chunk_scores
     state["graph_expanded_ids"] = graph_expanded_ids
     state["retrieved_chunks"] = chunks_used
     state["reranked_chunks"] = chunks_used
-    state["rerank_scores"] = {}
+    state["rerank_scores"] = rerank_scores
+    # Store top expanded docs per seed so second retrieval can reuse them
+    state["top5_seed1_expanded"] = seed1_expanded_docs
+    state["top5_seed2_expanded"] = seed2_expanded_docs
     state["iteration_count"] = state.get("iteration_count", 0) + 1
     
     # Add debug info
@@ -735,9 +903,9 @@ def initial_retrieval(state: AgentState) -> AgentState:
         "high_quality_seeds": len(high_quality_seeds),
         "seeds_used_for_expansion": len(top_seeds_for_expansion),
         "graph_expanded_chunks": len(graph_expanded_ids),
-        "total_retrieved": len(retrieved_chunks),
+        "total_retrieved": len(chunks_used),
         "total_used": len(chunks_used),
-        "similarity_threshold": SIMILARITY_THRESHOLD,
+        "similarity_threshold": SEED_SIMILARITY_THRESHOLD,
         "top_seeds_for_expansion": top_seeds_for_expansion,
         "seed_scores": {str(k): round(v, 3) for k, v in list(seed_chunk_scores.items())[:10]},
     }
@@ -761,7 +929,8 @@ def analyze_chunks(state: AgentState) -> AgentState:
         heading = chunk.metadata.get("heading", "No heading")
         section = chunk.metadata.get("section_path", "No section")
         summary = chunk.metadata.get("summary", "")
-        content_preview = chunk.page_content[:300] + "..." if len(chunk.page_content) > 300 else chunk.page_content
+        # Use full chunk content so the model can see answers that occur later in long paragraphs
+        content_preview = chunk.page_content
         
         chunks_text.append(f"""
 Chunk {i}:
@@ -774,7 +943,12 @@ Chunk {i}:
     context = "\n".join(chunks_text)
     
     # Ask LLM to analyze
-    analysis_prompt = f"""Query: {query}
+    analysis_prompt = f"""You are checking whether the following chunks ALREADY contain a direct answer.
+
+If ANY chunk includes a sentence that explicitly answers the question, you MUST treat the question as answerable from these chunks alone.
+Only if, after carefully reading ALL chunks, you are sure the answer is NOT present, may you say that more information is needed.
+
+Query: {query}
 
 Chunks:
 {context}
@@ -873,80 +1047,146 @@ RELATED_QUERY: [one query or None]"""
     return state
 
 def second_retrieval(state: AgentState) -> AgentState:
-    """Perform second retrieval with new query: vector search + selective graph expansion"""
+    """
+    Perform second retrieval with new query.
+    Behavior: new top-5 from vector search, then reuse top expanded chunks
+    from the first two seeds computed during initial_retrieval.
+    """
     new_query = state["new_query"]
     vector_store = _vector_store
-    document_graph = _document_graph
-    existing_chunk_ids = set(state["seed_chunk_ids"] + state["graph_expanded_ids"])
-    
-    logger.info(f"Second graph-enhanced retrieval for query: '{new_query}'")
-    
-    # Step 1: Vector search with new query
-    second_seed_ids = []
-    second_seed_scores = {}
-    second_seeds_with_scores = []
-    
+
+    logger.info(f"Second retrieval (refined query) for: '{new_query}'")
+
+    # Step 1: Vector search with new query (no graph expansion)
+    second_seed_ids: List[int] = []
+    second_seed_scores: Dict[int, float] = {}
+
     try:
-        vector_results = vector_store.similarity_search_with_score(new_query, k=15)  # Increased from 6
+        vector_results = vector_store.similarity_search_with_score(new_query, k=SECOND_VECTOR_SEARCH_K)
         for doc, distance in vector_results:
             chunk_id = doc.metadata.get("chunk_index")
-            if chunk_id is not None and chunk_id not in existing_chunk_ids:
+            if chunk_id is not None:
                 similarity_score = distance_to_similarity(distance)
-                second_seeds_with_scores.append((chunk_id, similarity_score, distance))
                 second_seed_ids.append(chunk_id)
                 second_seed_scores[chunk_id] = similarity_score
-                logger.debug(f"  Seed chunk {chunk_id} (distance: {distance:.3f}, similarity: {similarity_score:.3f})")
+                logger.debug(f"  Second retrieval chunk {chunk_id} (distance: {distance:.3f}, similarity: {similarity_score:.3f})")
     except Exception as e:
-        logger.warning(f"Vector search error: {e}")
-    
-    logger.info(f"Found {len(second_seed_ids)} new seed chunks")
+        logger.warning(f"Vector search error in second_retrieval: {e}")
+
+    logger.info(f"Second retrieval vector search returned {len(second_seed_ids)} chunks (k={SECOND_VECTOR_SEARCH_K})")
     _append_token_usage(state, "second_retrieval", embedding_tokens=_est_tokens(new_query or ""))
-    
-    # Step 2: Selective graph expansion - only from top relevant seeds
-    SIMILARITY_THRESHOLD = 0.3
-    TOP_SEEDS_FOR_EXPANSION = 4  # Fewer for second retrieval
-    
-    second_seeds_with_scores.sort(reverse=True, key=lambda x: x[1])
-    high_quality_second_seeds = [chunk_id for chunk_id, score, _ in second_seeds_with_scores if score >= SIMILARITY_THRESHOLD]
-    top_second_seeds = [chunk_id for chunk_id, _, _ in second_seeds_with_scores[:TOP_SEEDS_FOR_EXPANSION]]
-    
-    second_expanded_ids = []
-    if top_second_seeds:
-        second_expanded_ids = document_graph.expand_from_chunks(top_second_seeds, max_expansion=12)
-    
-    # Filter out already retrieved chunks
-    new_expanded = [cid for cid in second_expanded_ids if cid not in existing_chunk_ids]
-    
-    all_second_ids = list(set(second_seed_ids + new_expanded))
-    logger.info(f"Graph expansion: {len(new_expanded)} additional chunks (total new: {len(all_second_ids)})")
-    
-    # Get Document objects (no re-ranking)
-    second_chunks = []
-    chunk_dict = {chunk.metadata.get("chunk_index"): chunk for chunk in _chunks}
-    for chunk_id in all_second_ids:
-        if chunk_id in chunk_dict:
-            second_chunks.append(chunk_dict[chunk_id])
-    second_chunks = second_chunks[:15]  # Cap at 15
+
+    # Map chunk_index -> Document
+    chunk_dict: Dict[int, Document] = {chunk.metadata.get("chunk_index"): chunk for chunk in _chunks}
+
+    # New initial top-5 for second retrieval
+    second_top_docs: List[Document] = []
+    for cid in second_seed_ids[:SECOND_VECTOR_SEARCH_K]:
+        if cid in chunk_dict:
+            second_top_docs.append(chunk_dict[cid])
+
+    # Reuse expanded top-5 from the first two seeds of initial_retrieval
+    seed1_expanded_docs: List[Document] = state.get("top5_seed1_expanded") or []
+    seed2_expanded_docs: List[Document] = state.get("top5_seed2_expanded") or []
+
+    # Build final second retrieval chunks:
+    # new top 5 initial chunks + top similar chunks of 1st seed + top similar chunks of 2nd seed
+    seen_ids: set[int] = set()
+    second_chunks: List[Document] = []
+
+    for doc in second_top_docs:
+        cid = doc.metadata.get("chunk_index")
+        if cid is None or cid in seen_ids:
+            continue
+        seen_ids.add(cid)
+        second_chunks.append(doc)
+
+    for doc in seed1_expanded_docs:
+        if len(second_chunks) >= FINAL_CHUNKS_FOR_LLM:
+            break
+        cid = doc.metadata.get("chunk_index")
+        if cid is None or cid in seen_ids:
+            continue
+        seen_ids.add(cid)
+        second_chunks.append(doc)
+
+    if len(second_chunks) < FINAL_CHUNKS_FOR_LLM:
+        for doc in seed2_expanded_docs:
+            if len(second_chunks) >= FINAL_CHUNKS_FOR_LLM:
+                break
+            cid = doc.metadata.get("chunk_index")
+            if cid is None or cid in seen_ids:
+                continue
+            seen_ids.add(cid)
+            second_chunks.append(doc)
+
+    if len(second_chunks) > FINAL_CHUNKS_FOR_LLM:
+        second_chunks = second_chunks[:FINAL_CHUNKS_FOR_LLM]
 
     state["second_seed_ids"] = second_seed_ids
     state["second_seed_scores"] = second_seed_scores
-    state["second_expanded_ids"] = new_expanded
+    # No new graph expansion in second retrieval; keep for compatibility
+    state["second_expanded_ids"] = []
     state["second_retrieval_chunks"] = second_chunks
     state["iteration_count"] = state.get("iteration_count", 0) + 1
-    
+
     # Update debug info
     debug_info = state.get("debug_info", {})
     debug_info["second_retrieval"] = {
         "total_seed_chunks": len(second_seed_ids),
-        "high_quality_seeds": len(high_quality_second_seeds),
-        "seeds_used_for_expansion": len(top_second_seeds),
-        "graph_expanded_chunks": len(new_expanded),
+        "graph_expanded_chunks": 0,
         "total_second_chunks": len(second_chunks),
     }
     state["debug_info"] = debug_info
-    
-    logger.info(f"Second retrieval complete: {len(second_chunks)} new chunks")
+
+    logger.info(f"Second retrieval complete: {len(second_chunks)} chunks (target {FINAL_CHUNKS_FOR_LLM})")
     return state
+
+
+def _select_supporting_chunk_ids_from_answer(
+    answer: str,
+    chunks: List[Document],
+    top_k: int = 4,
+) -> List[int]:
+    """
+    Post-hoc grounding: choose which chunks support the answer using simple token overlap.
+    This is deterministic and does not rely on the LLM to pick ids.
+    """
+    if not answer or not chunks:
+        return []
+
+    # Normalize text: lowercase alphanumeric tokens
+    def _tokens(text: str) -> set[str]:
+        cleaned = re.sub(r"[^a-zA-Z0-9]+", " ", text.lower())
+        return {t for t in cleaned.split() if t}
+
+    answer_tokens = _tokens(answer)
+    if not answer_tokens:
+        return []
+
+    scores: List[tuple[int, float]] = []
+    for chunk in chunks:
+        cid = chunk.metadata.get("chunk_index")
+        if cid is None:
+            continue
+        chunk_tokens = _tokens(chunk.page_content)
+        if not chunk_tokens:
+            continue
+        overlap = len(answer_tokens & chunk_tokens)
+        if overlap <= 0:
+            continue
+        # Simple normalized score
+        score = overlap / max(1.0, float(len(answer_tokens)))
+        scores.append((cid, score))
+
+    # Sort by score descending and take top_k
+    scores.sort(key=lambda x: x[1], reverse=True)
+    top_ids: List[int] = []
+    for cid, _ in scores:
+        top_ids.append(cid)
+        if len(top_ids) >= top_k:
+            break
+    return top_ids
 
 def generate_final_answer(state: AgentState) -> AgentState:
     """Generate final answer from all retrieved chunks (re-ranked and filtered)"""
@@ -959,32 +1199,24 @@ def generate_final_answer(state: AgentState) -> AgentState:
 
     logger.info(f"Generating answer for question: '{query[:80]}{'...' if len(query) > 80 else ''}'")
 
-    # Use re-ranked chunks if available, otherwise use retrieved chunks
+    # Prefer second_retrieval chunks when available; otherwise fall back to initial retrieval chunks.
+    second_chunks = state.get("second_retrieval_chunks") or []
     primary_chunks = state.get("reranked_chunks") or state.get("retrieved_chunks", [])
-    second_chunks = state.get("second_retrieval_chunks", [])
 
-    # Combine chunks: when second retrieval was used (refined query), put those chunks first
-    # so the answer is based on the most relevant retrieval (e.g. "jurisdiction" refined query).
-    primary_chunk_ids = {chunk.metadata.get("chunk_index") for chunk in primary_chunks}
-    second_only = [c for c in second_chunks if c.metadata.get("chunk_index") not in primary_chunk_ids]
-    if second_only:
-        # Refined-query chunks first, then primary, so LLM prioritizes jurisdiction (etc.) content
-        all_chunks = second_only + primary_chunks
-        max_chunks = 35
+    if second_chunks:
+        all_chunks = list(second_chunks)
     else:
-        all_chunks = primary_chunks.copy()
-        max_chunks = 25
-    chunks_to_use = all_chunks[:max_chunks]
-    # Track exact chunk indices sent to LLM so API can return only these as "sources"
-    state["chunk_indices_used_for_answer"] = {
-        c.metadata.get("chunk_index")
-        for c in chunks_to_use
-        if c.metadata.get("chunk_index") is not None
-    }
+        all_chunks = list(primary_chunks)
+
+    # Always cap to FINAL_CHUNKS_FOR_LLM so LLM context is bounded and predictable.
+    chunks_to_use = all_chunks[:FINAL_CHUNKS_FOR_LLM]
 
     llm = _llm
 
-    logger.info(f"Generating final answer from {len(all_chunks)} chunks (primary: {len(primary_chunks)}, second: {len(second_chunks)})...")
+    logger.info(
+        f"Generating final answer from {len(chunks_to_use)} chunks "
+        f"(primary pool: {len(primary_chunks)}, second pool: {len(second_chunks)})..."
+    )
 
     # Prepare comprehensive context
     chunks_text = []
@@ -995,15 +1227,14 @@ def generate_final_answer(state: AgentState) -> AgentState:
         heading = chunk.metadata.get("heading", "No heading")
         section = chunk.metadata.get("section_path", "No section")
         summary = chunk.metadata.get("summary", "")
-        content = chunk.page_content[:500] + "..." if len(chunk.page_content) > 500 else chunk.page_content
+        # Use full chunk content so the model has complete visibility when answering
+        content = chunk.page_content
 
         # Add relevance score if available
         relevance_note = ""
         if chunk_id in rerank_scores:
             relevance_note = f" (Relevance: {rerank_scores[chunk_id]:.2f})"
 
-        # IMPORTANT: we label each chunk with its real vector index (chunk_index)
-        # so the LLM can cite sources using [C<ChunkId>] markers.
         chunks_text.append(f"""
 [ChunkId: {chunk_id}]
 Section: {section}
@@ -1016,8 +1247,6 @@ Content: {content}{relevance_note}
 
     # Full retrieval path: do NOT send past conversation context. Answer from retrieved chunks + current query only.
     # Put the question first and repeat before answer so the model always sees it.
-    # Instruct the model to return a well-structured, markdown-formatted answer with bold headings
-    # and inline citations that reference the underlying chunk indexes.
     answer_prompt = f"""QUESTION (answer this using only the document chunks below):
 {query}
 
@@ -1031,16 +1260,13 @@ Again, the question to answer is: {query}
 Write the answer in CLEAR, WELL-FORMATTED MARKDOWN:
 
 - Start with a one-line **Short Answer**.
-- If the document does not state something explicitly, do not add any details, instead say that this information is not available in pdf.
+- If the document does not state something explicitly, do not add any details; instead say that this information is not available in pdf.
 - Then add a *Explanation* section with the size of the text required for a chat responce with as is wording from the context.
 - Use **bold subheadings** for important parts (for example: **Definition**, **Conditions**, **Exceptions**, **Important Dates**).
 - When listing items, steps, obligations, or conditions, use bullet points.
 - If the document does not state something explicitly, say that clearly (do not invent details).
-- VERY IMPORTANT: When you use information from one or more chunks, add citation markers at the end of the relevant sentence
-  using the following format, where ChunkId is the numeric id from the context above:
-  - Example with one source: This is some fact. [C12]
-  - Example with multiple sources: This is an important point. [C12][C27]
-  Only use ChunkIds that appear in the context (the [ChunkId: N] labels); do NOT make up ids.
+- Do NOT mention or guess any chunk numbers, chunk ids, or sources (for example: \"Chunk 6\", \"[C12]\", \"Source: Chunk 3\").
+- Do NOT include any citation markers or source labels of any kind in your answer.
 
 Answer (use only the chunks above; include citation markers as described):"""
 
@@ -1095,6 +1321,19 @@ Answer (use only the chunks above; include citation markers as described):"""
             state["final_answer"] = "I could not retrieve sufficient information from the document to answer this question."
             state["next_questions"] = []
         else:
+            # Post-hoc grounding: decide which chunks support the generated answer
+            supporting_ids = _select_supporting_chunk_ids_from_answer(final_answer, chunks_to_use)
+            if supporting_ids:
+                # Deterministic, ordered list of chunk indices actually used (by overlap with answer)
+                state["chunk_indices_used_for_answer"] = supporting_ids
+            else:
+                # Fallback: if overlap score failed, expose all chunk indices we sent to the LLM
+                all_ids: List[int] = []
+                for c in chunks_to_use:
+                    cid = c.metadata.get("chunk_index")
+                    if cid is not None and cid not in all_ids:
+                        all_ids.append(cid)
+                state["chunk_indices_used_for_answer"] = all_ids
             state["final_answer"] = final_answer
             logger.info(f"Final answer generated from {len(chunks_to_use)} chunks")
 
@@ -1163,6 +1402,7 @@ Reply in the following format ONLY:
             "second_chunks": len(second_chunks),
             "answer_length": len(final_answer) if all_chunks else 0,
             "next_questions_count": len(state.get("next_questions") or []),
+            "chunk_indices_used_for_answer": state.get("chunk_indices_used_for_answer") or [],
         }
         state["debug_info"] = debug_info
         

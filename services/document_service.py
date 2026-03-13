@@ -649,12 +649,22 @@ def query_document(
                     "similarity_score": second_seed_scores.get(cid),
                     "rerank_score": rerank_scores.get(cid),
                 })
-            # Return only chunks that were actually sent to the LLM for the answer (if tracked)
+            # Return only chunks that were actually sent to the LLM for the answer (if tracked),
+            # and preserve the *ordering* chosen by post-hoc grounding.
             used_ids = final_state.get("chunk_indices_used_for_answer")
-            if used_ids is not None and isinstance(used_ids, (set, list)):
-                used_set = set(used_ids)
-                chunks_out = [c for c in chunks_out if c["chunk_index"] in used_set]
-            chunks_out.sort(key=lambda c: c["chunk_index"])
+            if used_ids is not None and isinstance(used_ids, (list, set)):
+                # Work with a list while preserving order and deduplicating.
+                ordered_ids: List[int] = []
+                for cid in used_ids:
+                    if cid not in ordered_ids:
+                        ordered_ids.append(cid)
+                id_to_rank = {cid: rank for rank, cid in enumerate(ordered_ids)}
+                # Filter to just those chunks and sort by their rank.
+                chunks_out = [
+                    c for c in chunks_out
+                    if c["chunk_index"] in id_to_rank
+                ]
+                chunks_out.sort(key=lambda c: id_to_rank.get(c["chunk_index"], 1_000_000))
 
     debug_info = dict(final_state.get("debug_info", {}))
     if rerank_scores:
@@ -688,6 +698,15 @@ def query_document(
         "page_number": final_state.get("page_number"),
         "next_questions": final_state.get("next_questions") or [],
     }
+    # Explicit ordered list of chunk indices that most strongly support the final answer.
+    if "chunk_indices_used_for_answer" in final_state:
+        ids = final_state.get("chunk_indices_used_for_answer") or []
+        if isinstance(ids, (list, set)):
+            ordered_ids: List[int] = []
+            for cid in ids:
+                if cid not in ordered_ids:
+                    ordered_ids.append(cid)
+            out["chunk_indices_used_for_answer"] = ordered_ids
     if streaming and final_state.get("answer_prompt"):
         out["answer_prompt"] = final_state["answer_prompt"]
     return out

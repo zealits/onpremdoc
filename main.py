@@ -200,6 +200,8 @@ class QueryResponse(BaseModel):
     chunks: List[ChunkDetail] = Field(default_factory=list, description="Detailed information about chunks used to generate the answer")
     debug_info: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Debugging information about retrieval process")
     next_questions: List[str] = Field(default_factory=list, description="Suggested follow-up questions based on the answer")
+    # Ordered list of chunk indices that most strongly support the final answer.
+    chunk_indices_used_for_answer: List[int] = Field(default_factory=list, description="Ordered chunk indices ranked by how strongly they support the answer")
 
 
 class VisualizationRequest(BaseModel):
@@ -1173,11 +1175,15 @@ async def query_document(
     try:
         # Run the agent in streaming mode: it does retrieval and builds the answer
         # prompt but does not call the LLM; we stream via llm.stream() below.
+        # Do NOT stream from inside the agent. We run the full retrieval + LLM
+        # once (including post-hoc grounding for supporting chunks), then stream
+        # the finished answer text ourselves. This ensures
+        # chunk_indices_used_for_answer is always populated.
         result = document_service.query_document(
             request.document_id,
             request.query,
             include_chunks=request.include_chunks,
-            streaming=True,
+            streaming=False,
             past_messages=past_messages,
         )
     except ValueError as e:
@@ -1206,6 +1212,8 @@ async def query_document(
             "is_page_summary": result.get("is_page_summary", False),
             "is_use_history": result.get("is_use_history", False),
             "page_number": result.get("page_number"),
+            # Ordered chunk indices used for the answer, when available.
+            "chunk_indices_used_for_answer": result.get("chunk_indices_used_for_answer") or [],
         }
         yield json.dumps(meta, ensure_ascii=False) + "\n"
 
