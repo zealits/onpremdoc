@@ -427,10 +427,10 @@ function ChatPanel({
                   <span className="text-sm">Generating summary…</span>
                 </div>
               ) : (
-                <div className="bg-gradient-to-br from-slate-800/50 to-slate-700/50 rounded-xl p-5 border border-slate-600/30">
+                <div className="bg-gradient-to-br from-gray-50 to-blue-50 dark:from-slate-800/50 dark:to-slate-700/50 rounded-xl p-5 border border-gray-200 dark:border-slate-600/30">
                   <div className="text-sm leading-7 space-y-4 text-inherit">
                     {documentSummary?.split('\n\n').map((paragraph, index) => (
-                      <p key={index} className="text-gray-200 dark:text-gray-200 last:mb-0">
+                      <p key={index} className="text-gray-800 dark:text-gray-200 last:mb-0">
                         {paragraph.trim()}
                       </p>
                     )) || documentSummary}
@@ -440,15 +440,15 @@ function ChatPanel({
             </div>
           )}
           {messages.length === 0 && (
-            <div className="text-sm space-y-3">
-              <p className="font-medium">Ask anything about this document.</p>
-              <div className="flex flex-wrap gap-2">
+            <div className="space-y-4 mt-2">
+              <p className="font-medium text-base text-inherit">Ask anything about this document.</p>
+              <div className="flex flex-wrap gap-2.5">
                 {suggested.map((q) => (
                   <button
                     key={q}
                     type="button"
                     onClick={() => send(q)}
-                    className="px-3 py-2 rounded-full border border-indigo-200 bg-indigo-50 text-indigo-700 text-xs sm:text-sm hover:bg-indigo-100 hover:border-indigo-300 transition-colors"
+                    className="px-4 py-2.5 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 text-sm hover:bg-indigo-100 dark:hover:bg-indigo-900/50 hover:border-indigo-300 dark:hover:border-indigo-600 transition-colors font-medium"
                   >
                     {q}
                   </button>
