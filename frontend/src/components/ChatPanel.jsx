@@ -639,7 +639,7 @@ function ChatPanel({
                      (msg.chunk_indices_used_for_answer?.length ?? 0) > 0 && 
                      (msg.showSourceChunks || msg.typingPhase === "complete" || !msg.isTyping) && (
                       <div className="flex flex-wrap items-center gap-1.5 mb-2 pb-2 border-b chat-assistant-divider typing-phase-enter">
-                        <span className="text-xs font-medium chat-assistant-muted mr-1">Source chunks:</span>
+                        <span className="text-xs font-medium chat-assistant-muted mr-1">Sources:</span>
                         {msg.chunk_indices_used_for_answer.map((chunkIndex) => (
                           <CitationButton
                             key={chunkIndex}
