@@ -55,7 +55,7 @@ export default function Layout() {
   return (
     <div className="h-screen theme-shell overflow-hidden">
       <div className="flex h-full w-full">
-        <aside className="w-64 flex-shrink-0 border-r theme-sidebar backdrop-blur-xl flex flex-col">
+        <aside className="w-80 flex-shrink-0 border-r theme-sidebar backdrop-blur-xl flex flex-col">
           <div className="px-4 py-4 border-b theme-sidebar">
             <div className="flex flex-col gap-3">
               <div className="flex items-center justify-between gap-2 min-w-0">

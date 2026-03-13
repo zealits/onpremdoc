@@ -3,6 +3,7 @@ import { useEconomicsPipeline, useQueryEconomics } from '../api/hooks'
 
 export default function EconomicsPipelineModal({ documentId, documentName, onClose }) {
   const [activeTab, setActiveTab] = useState('pipeline')
+  const [totalsOpen, setTotalsOpen] = useState(false)
 
   const {
     data,
@@ -39,14 +40,16 @@ export default function EconomicsPipelineModal({ documentId, documentName, onClo
   const totalPages = pagesFromProcessing
   const totalWords = vectorizationEvent?.extra?.total_words ?? null
 
+  const formatUsd = (value) =>
+    typeof value === 'number'
+      ? value.toFixed(3)
+      : '-'
+
   const humanFileSize =
     typeof fileSizeBytes === 'number'
       ? (() => {
-          const kb = fileSizeBytes / 1024
-          const mb = kb / 1024
-          if (mb >= 1) return `${mb.toFixed(2)} MB`
-          if (kb >= 1) return `${kb.toFixed(1)} KB`
-          return `${fileSizeBytes} B`
+          const mb = fileSizeBytes / (1024 * 1024)
+          return `${mb.toFixed(2)} MB`
         })()
       : null
 
@@ -57,11 +60,11 @@ export default function EconomicsPipelineModal({ documentId, documentName, onClo
       aria-modal="true"
       aria-labelledby="economics-modal-title"
     >
-      <div className="theme-card rounded-2xl shadow-2xl w-full max-w-4xl border max-h-[80vh] flex flex-col">
+      <div className="theme-card rounded-2xl shadow-2xl w-full max-w-3xl border max-h-[80vh] flex flex-col">
         <div className="flex items-center justify-between px-5 py-4 border-b theme-sidebar">
           <div>
             <h2 id="economics-modal-title" className="text-lg font-semibold">
-              Economics
+              Transaction Summary
             </h2>
             {documentName && (
               <p className="text-xs opacity-70 mt-0.5 truncate max-w-md">
@@ -93,11 +96,22 @@ export default function EconomicsPipelineModal({ documentId, documentName, onClo
               >
                 Queries
               </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('events')}
+                className={`px-2.5 py-1.5 text-xs rounded-md font-medium transition-colors ${
+                  activeTab === 'events'
+                    ? 'bg-slate-100 text-slate-900 dark:bg-slate-50 dark:text-slate-900'
+                    : 'text-slate-300 hover:bg-slate-800/80'
+                }`}
+              >
+                Events
+              </button>
             </div>
             <button
               type="button"
-              onClick={() => (activeTab === 'pipeline' ? refetch() : refetchQueries())}
-              disabled={activeTab === 'pipeline' ? isFetching : queriesFetching}
+              onClick={() => (activeTab === 'queries' ? refetchQueries() : refetch())}
+              disabled={activeTab === 'queries' ? queriesFetching : isFetching}
               className="text-xs px-3 py-1.5 rounded-lg border theme-sidebar-muted disabled:opacity-50"
             >
               {(activeTab === 'pipeline' ? isFetching : queriesFetching) ? 'Refreshing…' : 'Refresh'}
@@ -131,12 +145,30 @@ export default function EconomicsPipelineModal({ documentId, documentName, onClo
             ) : (
               <>
               <div className="space-y-4">
-                {(filename || totalPages != null || totalWords != null || humanFileSize) && (
+                {(filename || totalPages != null || totalWords != null || humanFileSize || totals) && (
                   <div>
                     <h3 className="font-semibold mb-2 text-inherit">Document stats</h3>
                     <div className="border rounded-xl overflow-hidden">
                       <table className="min-w-full text-xs sm:text-sm">
                         <tbody>
+                          {totals && (
+                            <>
+                              <tr className="theme-card border-b">
+                                <td className="px-3 py-2">Cost estimate (USD)</td>
+                                <td className="px-3 py-2 text-right">
+                                  {formatUsd(totals.cost_estimate_usd)}
+                                </td>
+                              </tr>
+                              <tr className="theme-card border-b">
+                                <td className="px-3 py-2">Pipeline duration (s)</td>
+                                <td className="px-3 py-2 text-right">
+                                  {totals.pipeline_seconds != null
+                                    ? totals.pipeline_seconds.toFixed(2)
+                                    : '-'}
+                                </td>
+                              </tr>
+                            </>
+                          )}
                           {filename && (
                             <tr className="theme-card border-b">
                               <td className="px-3 py-2">Filename</td>
@@ -160,7 +192,6 @@ export default function EconomicsPipelineModal({ documentId, documentName, onClo
                               <td className="px-3 py-2">File size</td>
                               <td className="px-3 py-2 text-right">
                                 {humanFileSize}
-                                {typeof fileSizeBytes === 'number' ? ` (${fileSizeBytes.toLocaleString()} bytes)` : ''}
                               </td>
                             </tr>
                           )}
@@ -173,48 +204,54 @@ export default function EconomicsPipelineModal({ documentId, documentName, onClo
 
               {totals && (
                 <div>
-                  <h3 className="font-semibold mb-2 text-inherit">Totals</h3>
-                  <div className="border rounded-xl overflow-hidden">
-                    <table className="min-w-full text-xs sm:text-sm">
-                      <tbody>
-                        <tr className="theme-card border-b">
-                          <td className="px-3 py-2">Input tokens</td>
-                          <td className="px-3 py-2 text-right">{totals.input_tokens}</td>
-                        </tr>
-                        <tr className="theme-card border-b">
-                          <td className="px-3 py-2">Output tokens</td>
-                          <td className="px-3 py-2 text-right">{totals.output_tokens}</td>
-                        </tr>
-                        <tr className="theme-card border-b">
-                          <td className="px-3 py-2">Embedding tokens</td>
-                          <td className="px-3 py-2 text-right">{totals.embedding_tokens}</td>
-                        </tr>
-                        <tr className="theme-card border-b">
-                          <td className="px-3 py-2">Total tokens</td>
-                          <td className="px-3 py-2 text-right">{totals.total_tokens}</td>
-                        </tr>
-                        <tr className="theme-card border-b">
-                          <td className="px-3 py-2">Cost estimate (USD)</td>
-                          <td className="px-3 py-2 text-right">
-                            {totals.cost_estimate_usd != null
-                              ? totals.cost_estimate_usd.toFixed(6)
-                              : '-'}
-                          </td>
-                        </tr>
-                        <tr className="theme-card">
-                          <td className="px-3 py-2">Pipeline duration (s)</td>
-                          <td className="px-3 py-2 text-right">
-                            {totals.pipeline_seconds != null
-                              ? totals.pipeline_seconds.toFixed(2)
-                              : '-'}
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setTotalsOpen((open) => !open)}
+                    className="w-full flex items-center justify-between mb-2 text-inherit font-semibold hover:opacity-80"
+                  >
+                    <span>Totals</span>
+                    <svg
+                      className={`w-4 h-4 transition-transform ${totalsOpen ? 'rotate-90' : ''}`}
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </button>
+                  {totalsOpen && (
+                    <div className="border rounded-xl overflow-hidden">
+                      <table className="min-w-full text-xs sm:text-sm">
+                        <tbody>
+                          <tr className="theme-card border-b">
+                            <td className="px-3 py-2">Input tokens</td>
+                            <td className="px-3 py-2 text-right">{totals.input_tokens}</td>
+                          </tr>
+                          <tr className="theme-card border-b">
+                            <td className="px-3 py-2">Output tokens</td>
+                            <td className="px-3 py-2 text-right">{totals.output_tokens}</td>
+                          </tr>
+                          <tr className="theme-card border-b">
+                            <td className="px-3 py-2">Embedding tokens</td>
+                            <td className="px-3 py-2 text-right">{totals.embedding_tokens}</td>
+                          </tr>
+                          <tr className="theme-card">
+                            <td className="px-3 py-2">Total tokens</td>
+                            <td className="px-3 py-2 text-right">{totals.total_tokens}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               )}
 
+            </>
+            )
+          ) : activeTab === 'events' ? (
+            events.length === 0 ? (
+              <div className="theme-sidebar-muted">No events available for this document.</div>
+            ) : (
               <div>
                 <h3 className="font-semibold mb-2 text-inherit">Events</h3>
                 <div className="border rounded-xl overflow-x-auto">
@@ -263,7 +300,6 @@ export default function EconomicsPipelineModal({ documentId, documentName, onClo
                   </table>
                 </div>
               </div>
-            </>
             )
           ) : isQueriesLoading && !queriesData ? (
             <div className="flex items-center gap-2 theme-sidebar-muted">
@@ -302,9 +338,7 @@ export default function EconomicsPipelineModal({ documentId, documentName, onClo
                       <tr className="theme-card">
                         <td className="px-3 py-2">Total cost estimate (USD)</td>
                         <td className="px-3 py-2 text-right">
-                          {queriesData.total_cost_estimate_usd != null
-                            ? queriesData.total_cost_estimate_usd.toFixed(6)
-                            : '-'}
+                          {formatUsd(queriesData.total_cost_estimate_usd)}
                         </td>
                       </tr>
                     </tbody>
