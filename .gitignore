@@ -9,3 +9,5 @@ frontend/node_modules/
 frontend/node_modules/*
 data
 economics/
+frontend/dist/
+frontend/dist/*
