@@ -238,7 +238,7 @@ function rehypeCitationSpans() {
   };
 }
 
-function CitationButton({ chunkId, chunks, onHighlight }) {
+function CitationButton({ chunkId, chunks, onHighlight, variant = "citation" }) {
   const chunk = (chunks || []).find((c) => c.chunk_index === chunkId);
   const handleClick = () => {
     if (!onHighlight || !chunk) return;
@@ -254,14 +254,21 @@ function CitationButton({ chunkId, chunks, onHighlight }) {
       lines,
     });
   };
+
+  const baseClasses = "inline align-baseline mx-0.5 px-1.5 py-0.5 rounded text-xs font-medium cursor-pointer transition-all duration-200";
+  const citationClasses = "text-blue-600 hover:text-blue-800 hover:underline bg-transparent border-0 hover:scale-105 active:scale-95";
+  const sourceClasses = "text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 hover:border-indigo-300 dark:text-indigo-300 dark:hover:text-indigo-200 dark:bg-indigo-900/30 dark:hover:bg-indigo-900/50 dark:border-indigo-800 dark:hover:border-indigo-600 hover:scale-105 active:scale-95 hover:shadow-sm";
+
+  const classes = variant === "source" ? `${baseClasses} ${sourceClasses}` : `${baseClasses} ${citationClasses}`;
+
   return (
     <button
       type="button"
       onClick={handleClick}
-      className="inline align-baseline mx-0.5 px-0 py-0 rounded-none border-0 bg-transparent text-blue-600 hover:text-blue-800 hover:underline cursor-pointer font-inherit"
+      className={classes}
       title={chunk ? `Go to source (${chunk.section_title || "Page " + chunk.page_number})` : "Go to source"}
     >
-      [C{chunkId}]
+      {variant === "source" ? `${chunkId}` : `[C${chunkId}]`}
     </button>
   );
 }
@@ -284,6 +291,99 @@ function ChatPanel({
   const [isStreaming, setIsStreaming] = useState(false);
   const activeAssistantIndexRef = useRef(null);
   const abortControllerRef = useRef(null);
+  
+  // Typing effect state
+  const [typingBuffer, setTypingBuffer] = useState("");
+  const [displayedContent, setDisplayedContent] = useState("");
+  const [isTyping, setIsTyping] = useState(false);
+  const typingIntervalRef = useRef(null);
+  const currentTypingIndexRef = useRef(0);
+  const [typingPhase, setTypingPhase] = useState("chunks"); // "chunks", "content", "questions"
+
+  // Sequential typing effect function
+  const startSequentialTypingEffect = (fullText, messageIndex, messageMetadata) => {
+    setIsTyping(true);
+    setTypingPhase("chunks");
+    
+    // Clear any existing typing animation
+    if (typingIntervalRef.current) {
+      clearInterval(typingIntervalRef.current);
+    }
+
+    // Phase 1: Show source chunks immediately
+    setMessages((prev) => {
+      if (messageIndex == null || messageIndex < 0 || messageIndex >= prev.length) return prev;
+      const copy = [...prev];
+      copy[messageIndex] = { 
+        ...copy[messageIndex], 
+        showSourceChunks: true,
+        content: "",
+        isTyping: true,
+        typingPhase: "chunks"
+      };
+      return copy;
+    });
+
+    // Phase 2: Start typing main content after a brief delay
+    setTimeout(() => {
+      setTypingPhase("content");
+      currentTypingIndexRef.current = 0;
+      
+      typingIntervalRef.current = setInterval(() => {
+        const currentIndex = currentTypingIndexRef.current;
+        
+        if (currentIndex >= fullText.length) {
+          clearInterval(typingIntervalRef.current);
+          
+          // Phase 3: Show follow-up questions after main content is done
+          setTimeout(() => {
+            setTypingPhase("questions");
+            
+            setMessages((prev) => {
+              if (messageIndex == null || messageIndex < 0 || messageIndex >= prev.length) return prev;
+              const copy = [...prev];
+              copy[messageIndex] = { 
+                ...copy[messageIndex], 
+                content: fullText,
+                isTyping: false,
+                showFollowUpQuestions: true,
+                typingPhase: "complete"
+              };
+              return copy;
+            });
+            
+            setIsTyping(false);
+          }, 500);
+          return;
+        }
+        
+        currentTypingIndexRef.current = currentIndex + 1;
+        
+        // Update message with current typed content
+        setMessages((prev) => {
+          if (messageIndex == null || messageIndex < 0 || messageIndex >= prev.length) return prev;
+          const copy = [...prev];
+          copy[messageIndex] = { 
+            ...copy[messageIndex], 
+            content: fullText.substring(0, currentIndex + 1),
+            isTyping: true,
+            typingPhase: "content"
+          };
+          return copy;
+        });
+        
+      }, 25); // Adjust speed: lower = faster typing
+    }, 800); // Delay before starting main content typing
+  };
+
+  // Clean up typing effect on unmount
+  useEffect(() => {
+    return () => {
+      if (typingIntervalRef.current) {
+        clearInterval(typingIntervalRef.current);
+      }
+    };
+  }, []);
 
   // Load chat history from localStorage when document changes (or on mount)
   useEffect(() => {
@@ -318,10 +418,16 @@ function ChatPanel({
     if (!q || !documentId) return;
     setInput("");
 
-    // Cancel any in-flight stream
+    // Cancel any in-flight stream and typing effect
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
+    }
+    
+    // Stop any active typing animation
+    if (typingIntervalRef.current) {
+      clearInterval(typingIntervalRef.current);
+      setIsTyping(false);
     }
 
     setMessages((m) => [...m, { role: "user", content: q }]);
@@ -336,6 +442,11 @@ function ChatPanel({
           content: "",
           chunks: [],
           next_questions: [],
+          chunk_indices_used_for_answer: [],
+          isTyping: false,
+          showSourceChunks: false,
+          showFollowUpQuestions: false,
+          typingPhase: "chunks"
         },
       ];
       assistantIndex = next.length - 1;
@@ -350,38 +461,81 @@ function ChatPanel({
     // Use stored session for this document so all messages in this chat belong to one session
     const sessionIdToSend = getStoredSessionId(documentId);
 
+    let completeResponse = "";
+    let responseMetadata = null;
+
     try {
       await queryDocumentStream(documentId, q, sessionIdToSend, true, (chunk) => {
+        if (chunk.type === "meta") {
+          responseMetadata = {
+            session_id: chunk.session_id,
+            chunks: chunk.chunks || [],
+            next_questions: chunk.next_questions || [],
+            is_page_summary: chunk.is_page_summary === true,
+            page_number: chunk.page_number,
+            chunk_indices_used_for_answer: chunk.chunk_indices_used_for_answer || []
+          };
+          
+          if (chunk.session_id != null) setStoredSessionId(documentId, chunk.session_id);
+          
+          // Update message metadata immediately
+          setMessages((prev) => {
+            const idx = activeAssistantIndexRef.current;
+            if (idx == null || idx < 0 || idx >= prev.length) return prev;
+            const copy = [...prev];
+            copy[idx] = { 
+              ...copy[idx], 
+              chunks: responseMetadata.chunks,
+              next_questions: responseMetadata.next_questions,
+              is_page_summary: responseMetadata.is_page_summary,
+              page_number: responseMetadata.page_number,
+              chunk_indices_used_for_answer: responseMetadata.chunk_indices_used_for_answer
+            };
+            return copy;
+          });
+          
+        } else if (chunk.type === "next_questions") {
+          // Final chunk containing suggested follow-up questions once the answer is complete
+          if (responseMetadata) {
+            responseMetadata.next_questions = chunk.next_questions || [];
+          }
+        } else if (chunk.type === "answer_chunk") {
+          completeResponse += (chunk.delta || "");
+        } else if (chunk.type === "error") {
+          completeResponse = `Error: ${chunk.message || "Request failed"}`;
+        }
+      });
+
+      // Start sequential typing effect with the complete response
+      if (completeResponse && activeAssistantIndexRef.current != null) {
+        startSequentialTypingEffect(completeResponse, activeAssistantIndexRef.current, responseMetadata);
+      } else if (activeAssistantIndexRef.current != null) {
+        // No response received, clear the placeholder message
         setMessages((prev) => {
           const idx = activeAssistantIndexRef.current;
           if (idx == null || idx < 0 || idx >= prev.length) return prev;
           const copy = [...prev];
-          const msg = { ...copy[idx] };
-
-          if (chunk.type === "meta") {
-            if (chunk.session_id != null) setStoredSessionId(documentId, chunk.session_id);
-            msg.chunks = chunk.chunks || [];
-            msg.next_questions = chunk.next_questions || [];
-            msg.is_page_summary = chunk.is_page_summary === true;
-            msg.page_number = chunk.page_number;
-          } else if (chunk.type === "next_questions") {
-            // Final chunk containing suggested follow-up questions once the answer is complete
-            msg.next_questions = chunk.next_questions || [];
-          } else if (chunk.type === "answer_chunk") {
-            msg.content = (msg.content || "") + (chunk.delta || "");
-          } else if (chunk.type === "error") {
-            msg.content = `Error: ${chunk.message || "Request failed"}`;
-          }
-
-          copy[idx] = msg;
+          copy[idx] = { 
+            ...copy[idx], 
+            content: "No response received.",
+            isTyping: false 
+          };
           return copy;
         });
-      });
+      }
     } catch (err) {
       if (err?.message?.toLowerCase().includes("session not found")) {
         setStoredSessionId(documentId, null);
       }
-      setMessages((m) => [...m, { role: "assistant", content: `Error: ${err?.message || "Request failed"}` }]);
+      
+      const errorMessage = `Error: ${err?.message || "Request failed"}`;
+      
+      // Show error with typing effect if we have an active message
+      if (activeAssistantIndexRef.current != null) {
+        startSequentialTypingEffect(errorMessage, activeAssistantIndexRef.current, null);
+      } else {
+        setMessages((m) => [...m, { role: "assistant", content: errorMessage, isTyping: false }]);
+      }
     } finally {
       setIsStreaming(false);
       abortControllerRef.current = null;
@@ -476,48 +630,77 @@ function ChatPanel({
                             chunkId={c.chunk_index}
                             chunks={msg.chunks}
                             onHighlight={onHighlightChunk}
+                            variant="citation"
                           />
                         ))}
                       </div>
                     )}
-                    <ReactMarkdown
-                      rehypePlugins={[rehypeCitationSpans]}
-                      components={{
-                        span: (props) => {
-                          let citationId =
-                            props["data-citation"] ??
-                            props.dataCitation ??
-                            props.node?.properties?.["data-citation"] ??
-                            props.node?.properties?.dataCitation;
-                          if (citationId == null || citationId === "") {
-                            const child = props.children;
-                            const str =
-                              typeof child === "string"
-                                ? child
-                                : Array.isArray(child) && child.length === 1 && typeof child[0] === "string"
-                                  ? child[0]
-                                  : null;
-                            const m = str && str.match(/^\[C(\d+)\]$/);
-                            if (m) citationId = m[1];
-                          }
-                          if (citationId != null && citationId !== "") {
-                            return (
-                              <CitationButton
-                                chunkId={parseInt(String(citationId), 10)}
-                                chunks={msg.chunks}
-                                onHighlight={onHighlightChunk}
-                              />
-                            );
-                          }
-                          const { node, ...spanProps } = props;
-                          return <span {...spanProps} />;
-                        },
-                      }}
-                    >
-                      {msg.content}
-                    </ReactMarkdown>
-                    {(msg.next_questions?.length ?? 0) > 0 && (
-                      <div className="mt-4 pt-3 border-t chat-assistant-divider">
+                    {/* Show chunk indices used for answer when available - Phase 1 */}
+                    {!msg.is_page_summary && 
+                     (msg.chunk_indices_used_for_answer?.length ?? 0) > 0 && 
+                     (msg.showSourceChunks || msg.typingPhase === "complete" || !msg.isTyping) && (
+                      <div className="flex flex-wrap items-center gap-1.5 mb-2 pb-2 border-b chat-assistant-divider typing-phase-enter">
+                        <span className="text-xs font-medium chat-assistant-muted mr-1">Source chunks:</span>
+                        {msg.chunk_indices_used_for_answer.map((chunkIndex) => (
+                          <CitationButton
+                            key={chunkIndex}
+                            chunkId={chunkIndex}
+                            chunks={msg.chunks}
+                            onHighlight={onHighlightChunk}
+                            variant="source"
+                          />
+                        ))}
+                      </div>
+                    )}
+                    {/* Main content - Phase 2 */}
+                    {(msg.typingPhase === "content" || msg.typingPhase === "complete" || !msg.isTyping) && (
+                      <div className="relative">
+                        <ReactMarkdown
+                          rehypePlugins={[rehypeCitationSpans]}
+                          components={{
+                            span: (props) => {
+                              let citationId =
+                                props["data-citation"] ??
+                                props.dataCitation ??
+                                props.node?.properties?.["data-citation"] ??
+                                props.node?.properties?.dataCitation;
+                              if (citationId == null || citationId === "") {
+                                const child = props.children;
+                                const str =
+                                  typeof child === "string"
+                                    ? child
+                                    : Array.isArray(child) && child.length === 1 && typeof child[0] === "string"
+                                      ? child[0]
+                                      : null;
+                                const m = str && str.match(/^\[C(\d+)\]$/);
+                                if (m) citationId = m[1];
+                              }
+                              if (citationId != null && citationId !== "") {
+                                return (
+                                  <CitationButton
+                                    chunkId={parseInt(String(citationId), 10)}
+                                    chunks={msg.chunks}
+                                    onHighlight={onHighlightChunk}
+                                    variant="citation"
+                                  />
+                                );
+                              }
+                              const { node, ...spanProps } = props;
+                              return <span {...spanProps} />;
+                            },
+                          }}
+                        >
+                          {msg.content}
+                        </ReactMarkdown>
+                        {msg.isTyping && msg.typingPhase === "content" && (
+                          <span className="typing-cursor inline-block w-0.5 h-5 bg-current ml-1"></span>
+                        )}
+                      </div>
+                    )}
+                    {/* Follow-up questions - Phase 3 */}
+                    {(msg.next_questions?.length ?? 0) > 0 && 
+                     (msg.showFollowUpQuestions || msg.typingPhase === "complete" || !msg.isTyping) && (
+                      <div className="mt-4 pt-3 border-t chat-assistant-divider typing-phase-enter">
                         <div className="flex items-center gap-2 mb-3">
                           <div className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-indigo-500/10 text-indigo-500">
                             <svg

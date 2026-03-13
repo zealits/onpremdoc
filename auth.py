@@ -29,7 +29,7 @@ JWT_SECRET_KEY = os.environ.get(
     "changeme-in-production-but-at-least-32-bytes-long",
 )
 JWT_ALGORITHM = os.environ.get("AUTH_JWT_ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("AUTH_ACCESS_TOKEN_MINUTES", "60"))
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("AUTH_ACCESS_TOKEN_MINUTES", "1200"))
 
 
 class Token(BaseModel):

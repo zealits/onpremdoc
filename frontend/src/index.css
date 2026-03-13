@@ -350,11 +350,181 @@ html[data-theme='light'] .upload-icon-box {
   color: #4f46e5;
 }
 
+/* Enhanced markdown highlight with modern styling */
+@keyframes highlight-appear {
+  0% {
+    background-color: transparent;
+    box-shadow: none;
+    transform: scale(1);
+  }
+  20% {
+    background-color: rgba(99, 102, 241, 0.25);
+    box-shadow: 
+      0 0 0 2px rgba(99, 102, 241, 0.4),
+      0 0 20px rgba(99, 102, 241, 0.15);
+    transform: scale(1.02);
+  }
+  40% {
+    background-color: rgba(99, 102, 241, 0.35);
+    box-shadow: 
+      0 0 0 3px rgba(99, 102, 241, 0.5),
+      0 0 30px rgba(99, 102, 241, 0.25),
+      0 0 60px rgba(99, 102, 241, 0.1);
+    transform: scale(1.02);
+  }
+  60% {
+    background-color: rgba(99, 102, 241, 0.28);
+    box-shadow: 
+      0 0 0 2px rgba(99, 102, 241, 0.45),
+      0 0 25px rgba(99, 102, 241, 0.2);
+    transform: scale(1.01);
+  }
+  100% {
+    background-color: rgba(99, 102, 241, 0.22);
+    box-shadow: 
+      0 0 0 2px rgba(99, 102, 241, 0.4),
+      0 0 20px rgba(99, 102, 241, 0.15);
+    transform: scale(1);
+  }
+}
+
+@keyframes highlight-pulse {
+  0%, 100% {
+    box-shadow: 
+      0 0 0 2px rgba(99, 102, 241, 0.4),
+      0 0 20px rgba(99, 102, 241, 0.15);
+  }
+  50% {
+    box-shadow: 
+      0 0 0 2px rgba(99, 102, 241, 0.6),
+      0 0 30px rgba(99, 102, 241, 0.25);
+  }
+}
+
+@keyframes highlight-disappear {
+  0% {
+    background-color: rgba(99, 102, 241, 0.22);
+    box-shadow: 
+      0 0 0 2px rgba(99, 102, 241, 0.4),
+      0 0 20px rgba(99, 102, 241, 0.15);
+    transform: scale(1);
+    opacity: 1;
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: none;
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
 .markdown-highlight {
-  background-color: rgba(30, 64, 175, 0.9);
-  box-shadow: 0 0 0 2px rgba(191, 219, 254, 0.9);
-  color: #f9fafb;
-  transition: background-color 0.6s ease-out, box-shadow 0.6s ease-out;
+  background: linear-gradient(135deg, 
+    rgba(99, 102, 241, 0.25) 0%, 
+    rgba(139, 92, 246, 0.25) 50%, 
+    rgba(99, 102, 241, 0.22) 100%
+  );
+  border-left: 4px solid rgba(99, 102, 241, 0.8);
+  border-radius: 6px;
+  color: inherit;
+  padding: 8px 12px;
+  margin: 4px 0;
+  position: relative;
+  backdrop-filter: blur(1px);
+  box-shadow: 
+    0 0 0 2px rgba(99, 102, 241, 0.4),
+    0 0 20px rgba(99, 102, 241, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  animation: highlight-appear 0.8s ease-out forwards, 
+             highlight-pulse 3s ease-in-out infinite 2s;
+}
+
+.markdown-highlight::before {
+  content: '';
+  position: absolute;
+  top: -2px;
+  left: -2px;
+  right: -2px;
+  bottom: -2px;
+  background: linear-gradient(135deg, 
+    rgba(99, 102, 241, 0.1), 
+    rgba(139, 92, 246, 0.1)
+  );
+  border-radius: 8px;
+  z-index: -1;
+  opacity: 0.7;
+}
+
+.markdown-highlight.removing {
+  animation: highlight-disappear 0.6s ease-out forwards;
+}
+
+/* Light theme adjustments */
+html[data-theme='light'] .markdown-highlight {
+  background: linear-gradient(135deg, 
+    rgba(99, 102, 241, 0.15) 0%, 
+    rgba(139, 92, 246, 0.15) 50%, 
+    rgba(99, 102, 241, 0.12) 100%
+  );
+  border-left-color: rgba(99, 102, 241, 0.9);
+  box-shadow: 
+    0 0 0 2px rgba(99, 102, 241, 0.3),
+    0 0 15px rgba(99, 102, 241, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+html[data-theme='light'] .markdown-highlight::before {
+  background: linear-gradient(135deg, 
+    rgba(99, 102, 241, 0.05), 
+    rgba(139, 92, 246, 0.05)
+  );
+}
+
+/* Enhanced interactions */
+.markdown-highlight:hover {
+  transform: translateX(2px);
+  transition: transform 0.2s ease-out;
+}
+
+.markdown-highlight:hover::before {
+  opacity: 1;
+}
+
+/* Ensure highlighted text remains readable */
+.markdown-highlight * {
+  color: inherit !important;
+}
+
+.markdown-highlight strong {
+  font-weight: 600;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.markdown-highlight code {
+  background-color: rgba(0, 0, 0, 0.1) !important;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+
+html[data-theme='light'] .markdown-highlight code {
+  background-color: rgba(255, 255, 255, 0.5) !important;
+}
+
+/* Special handling for tables in highlights */
+.markdown-highlight table {
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.markdown-highlight table th,
+.markdown-highlight table td {
+  border-color: rgba(99, 102, 241, 0.2);
+}
+
+/* Smooth scrolling enhancement for highlighted elements */
+html {
+  scroll-behavior: smooth;
 }
 
 .prose-citations {
@@ -569,4 +739,30 @@ html[data-theme='light'] .text-gray-400 {
 
 html[data-theme='light'] .bg-gray-200 {
   background-color: #e5e7eb;
+}
+
+/* Typing cursor animation */
+@keyframes typing-cursor-blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+.typing-cursor {
+  animation: typing-cursor-blink 1s infinite;
+}
+
+/* Sequential typing phase animations */
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.typing-phase-enter {
+  animation: fade-in-up 0.4s ease-out forwards;
 }

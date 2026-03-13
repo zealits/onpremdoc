@@ -17,14 +17,37 @@ function highlightElementAndScroll(el) {
   const root = el.closest('[data-markdown-root]') || el.parentElement || el
   if (root) {
     const prev = root.querySelectorAll('.markdown-highlight')
-    prev.forEach((node) => node.classList.remove('markdown-highlight'))
+    prev.forEach((node) => {
+      // Add removing class for fade-out animation
+      node.classList.add('removing')
+      // Clear any existing timeouts for previous highlights
+      if (node._markdownHighlightTimeout) {
+        window.clearTimeout(node._markdownHighlightTimeout)
+      }
+      if (node._markdownRemovalTimeout) {
+        window.clearTimeout(node._markdownRemovalTimeout)
+      }
+      // Remove highlight after fade-out animation completes
+      node._markdownRemovalTimeout = window.setTimeout(() => {
+        node.classList.remove('markdown-highlight', 'removing')
+      }, 600) // Match the fade-out animation duration
+    })
   }
 
   el.classList.add('markdown-highlight')
+  el.classList.remove('removing') // Ensure no removing class on new highlight
+  
+  // Clear any existing timeouts
   window.clearTimeout(el._markdownHighlightTimeout)
+  window.clearTimeout(el._markdownRemovalTimeout)
+  
+  // Set timeout for automatic removal after 10 seconds
   el._markdownHighlightTimeout = window.setTimeout(() => {
-    el.classList.remove('markdown-highlight')
-  }, 2000)
+    el.classList.add('removing')
+    el._markdownRemovalTimeout = window.setTimeout(() => {
+      el.classList.remove('markdown-highlight', 'removing')
+    }, 600) // Match the fade-out animation duration
+  }, 10000) // 10 seconds before starting fade-out
 }
 
 /** Normalize string the same way rendered DOM text is normalized for matching. */
