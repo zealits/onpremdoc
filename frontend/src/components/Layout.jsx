@@ -179,9 +179,9 @@ export default function Layout() {
                       <span className="text-sm font-semibold tracking-tight group-hover:text-indigo-500 truncate">
                         DocOnPrem
                       </span>
-                      <span className="text-[11px] theme-sidebar-muted truncate">
+                      {/* <span className="text-[11px] theme-sidebar-muted truncate">
                         Ask questions over any PDF
-                      </span>
+                      </span> */}
                     </span>
                   </Link>
                 ) : (

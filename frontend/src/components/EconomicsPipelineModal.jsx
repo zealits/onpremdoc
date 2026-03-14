@@ -108,14 +108,14 @@ export default function EconomicsPipelineModal({ documentId, documentName, onClo
                 Events
               </button>
             </div>
-            <button
+            {/* <button
               type="button"
               onClick={() => (activeTab === 'queries' ? refetchQueries() : refetch())}
               disabled={activeTab === 'queries' ? queriesFetching : isFetching}
               className="text-xs px-3 py-1.5 rounded-lg border theme-sidebar-muted disabled:opacity-50"
             >
               {(activeTab === 'pipeline' ? isFetching : queriesFetching) ? 'Refreshing…' : 'Refresh'}
-            </button>
+            </button> */}
             <button
               type="button"
               onClick={onClose}
