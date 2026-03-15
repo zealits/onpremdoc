@@ -139,6 +139,31 @@ export default function DocumentPage() {
       />
       <div className="flex-1 flex min-h-0 overflow-hidden">
         <div
+          className={`min-w-0 min-h-0 flex flex-col overflow-hidden transition-all duration-300 ease-out ${
+            ready && isMarkdownOpen ? "w-1/2" : "w-full"
+          }`}
+        >
+          {quickSummary && !ready && (
+            <div className="px-4 pt-4 pb-2 border-b border-slate-800/80 bg-slate-950/70">
+              <h2 className="text-sm font-semibold text-slate-100 mb-1">Quick document overview</h2>
+              <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-line">{quickSummary}</p>
+            </div>
+          )}
+          <ChatPanel
+            documentId={documentId}
+            documentReady={ready}
+            documentSummary={displaySummary}
+            suggestedQueries={displaySuggestedQueries}
+            documentName={getDocumentDisplayName(doc, documentId)}
+            isSummaryLoading={showSummaryLoading}
+            showSummaryBlock={showSummaryBlock}
+            onHighlightChunk={(chunk) => {
+              setActiveHighlight(chunk);
+              setIsMarkdownOpen(true);
+            }}
+          />
+        </div>
+        <div
           className={`relative min-w-0 min-h-0 flex flex-col overflow-hidden transition-all duration-300 ease-out ${
             ready ? (isMarkdownOpen ? "w-1/2 opacity-100" : "w-0 opacity-0 pointer-events-none") : "w-0"
           }`}
@@ -222,31 +247,6 @@ export default function DocumentPage() {
               </div>
             </div>
           )}
-        </div>
-        <div
-          className={`min-w-0 min-h-0 flex flex-col overflow-hidden transition-all duration-300 ease-out ${
-            ready && isMarkdownOpen ? "w-1/2" : "w-full"
-          }`}
-        >
-          {quickSummary && !ready && (
-            <div className="px-4 pt-4 pb-2 border-b border-slate-800/80 bg-slate-950/70">
-              <h2 className="text-sm font-semibold text-slate-100 mb-1">Quick document overview</h2>
-              <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-line">{quickSummary}</p>
-            </div>
-          )}
-          <ChatPanel
-            documentId={documentId}
-            documentReady={ready}
-            documentSummary={displaySummary}
-            suggestedQueries={displaySuggestedQueries}
-            documentName={getDocumentDisplayName(doc, documentId)}
-            isSummaryLoading={showSummaryLoading}
-            showSummaryBlock={showSummaryBlock}
-            onHighlightChunk={(chunk) => {
-              setActiveHighlight(chunk);
-              setIsMarkdownOpen(true);
-            }}
-          />
         </div>
       </div>
 
