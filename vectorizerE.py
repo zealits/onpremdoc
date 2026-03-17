@@ -1109,14 +1109,166 @@ Now provide the summary and key points:"""
         return fallback_summary, key_points
 
 
+def format_chunk_references(chunk_indices: List[int]) -> str:
+    """
+    Format chunk indices into footnote-style citation format.
+    
+    Args:
+        chunk_indices: List of chunk indices to format
+        
+    Returns:
+        Formatted string like "^[C1,C5,C12]" or empty string if no indices
+    """
+    if not chunk_indices:
+        return ""
+    
+    # Remove duplicates and sort numerically
+    unique_indices = sorted(set(chunk_indices))
+    
+    # Format as C1,C5,C12 etc.
+    chunk_refs = [f"C{idx}" for idx in unique_indices]
+    
+    return f"^[{','.join(chunk_refs)}]"
+
+
+def extract_chunk_references(text: str) -> List[int]:
+    """
+    Extract chunk indices from text containing footnote-style references.
+    
+    Args:
+        text: Text that may contain references like "^[C1,C5,C12]"
+        
+    Returns:
+        List of chunk indices found in the text
+    """
+    import re
+    
+    chunk_indices = []
+    # Find all ^[C1,C5,C12] patterns
+    pattern = r'\^\[([^\]]+)\]'
+    matches = re.findall(pattern, text)
+    
+    for match in matches:
+        # Split by comma and extract numbers
+        for chunk_ref in match.split(','):
+            chunk_ref = chunk_ref.strip()
+            if chunk_ref.startswith('C') and chunk_ref[1:].isdigit():
+                chunk_indices.append(int(chunk_ref[1:]))
+    
+    return sorted(set(chunk_indices))
+
+
+def aggregate_chunk_references(summaries_with_refs: List[str]) -> List[int]:
+    """
+    Aggregate chunk references from multiple summary texts.
+    
+    Args:
+        summaries_with_refs: List of summaries that may contain chunk references
+        
+    Returns:
+        Sorted list of unique chunk indices
+    """
+    all_indices = []
+    for summary in summaries_with_refs:
+        all_indices.extend(extract_chunk_references(summary))
+    
+    return sorted(set(all_indices))
+
+
+def find_supporting_chunks_for_text(
+    text: str,
+    available_chunks: List[Dict[str, Any]],
+    top_k_per_sentence: int = 2,
+    min_overlap_score: float = 0.1
+) -> List[int]:
+    """
+    Find chunks that support the given text using sentence-level token overlap analysis.
+    Similar to post-hoc grounding in retrivalAgentE.py but for summary sentences.
+    
+    Args:
+        text: Text to find supporting chunks for (e.g., a summary)
+        available_chunks: List of chunk data with 'chunk_index' and 'content' 
+        top_k_per_sentence: Maximum chunks to consider per sentence
+        min_overlap_score: Minimum overlap score to consider a chunk relevant
+        
+    Returns:
+        List of chunk indices that best support the text
+    """
+    if not text or not available_chunks:
+        return []
+    
+    # Normalize text: lowercase alphanumeric tokens
+    def _tokens(text_content: str) -> set[str]:
+        cleaned = re.sub(r"[^a-zA-Z0-9]+", " ", text_content.lower())
+        return {t for t in cleaned.split() if t and len(t) > 2}  # Filter out very short tokens
+    
+    # Split text into sentences
+    sentences = re.split(r'[.!?]+', text)
+    sentences = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 10]
+    
+    all_supporting_chunks = []
+    
+    for sentence in sentences:
+        sentence_tokens = _tokens(sentence)
+        if not sentence_tokens:
+            continue
+            
+        scores: List[Tuple[int, float]] = []
+        
+        for chunk_data in available_chunks:
+            chunk_idx = chunk_data.get('chunk_index')
+            chunk_content = chunk_data.get('content', '')
+            
+            if chunk_idx is None or not chunk_content:
+                continue
+                
+            chunk_tokens = _tokens(chunk_content)
+            if not chunk_tokens:
+                continue
+                
+            overlap = len(sentence_tokens & chunk_tokens)
+            if overlap <= 0:
+                continue
+                
+            # Normalized overlap score
+            score = overlap / max(1.0, float(len(sentence_tokens)))
+            if score >= min_overlap_score:
+                scores.append((chunk_idx, score))
+        
+        # Sort by score descending and take top_k per sentence
+        scores.sort(key=lambda x: x[1], reverse=True)
+        for chunk_idx, _ in scores[:top_k_per_sentence]:
+            all_supporting_chunks.append(chunk_idx)
+    
+    # Return unique chunk indices, preserving order
+    seen = set()
+    result = []
+    for chunk_idx in all_supporting_chunks:
+        if chunk_idx not in seen:
+            seen.add(chunk_idx)
+            result.append(chunk_idx)
+    
+    return sorted(result)
+
+
 def summarize_page_brief(
     page_number: int,
     page_content: str,
     llm: Any,
-) -> str:
+    page_chunks_data: List[Dict[str, Any]] = None,
+) -> Tuple[str, List[int]]:
     """
     Very short page summary (~50 words max) for page-level overview.
     Single LLM call, no classification label or key points.
+    
+    Args:
+        page_number: Page number being summarized
+        page_content: Text content of the page
+        llm: Language model for summarization
+        page_chunks_data: List of chunk data dicts with 'chunk_index' and 'content' for this page
+        
+    Returns:
+        Tuple of (summary_text, chunk_indices_used)
     """
     # Truncate content for safety and token efficiency
     text_for_llm, _ = token_tracker.check_llm_limit(page_content[:3000], max_tokens=800)
@@ -1171,7 +1323,18 @@ Rules:
         if not summary:
             summary = "This page contains document content. Please refer to the full document for details."
 
-        return summary
+        # Find chunks that actually support this summary using intelligent matching
+        if page_chunks_data:
+            chunk_indices_used = find_supporting_chunks_for_text(
+                summary, 
+                page_chunks_data, 
+                top_k_per_sentence=3, 
+                min_overlap_score=0.08
+            )
+        else:
+            chunk_indices_used = []
+        
+        return summary, chunk_indices_used
     except Exception as e:
         logger.warning(f"Error creating brief summary for page {page_number}: {e}")
         # Fallback: naive first-sentence summary
@@ -1180,7 +1343,20 @@ Rules:
         words = rough.split()
         if len(words) > 50:
             rough = " ".join(words[:50]).rstrip(" ,;") + "..."
-        return rough or "This page contains document content. Please refer to the full document for details."
+        fallback_summary = rough or "This page contains document content. Please refer to the full document for details."
+        
+        # Find supporting chunks for fallback summary too
+        if page_chunks_data:
+            chunk_indices_used = find_supporting_chunks_for_text(
+                fallback_summary, 
+                page_chunks_data, 
+                top_k_per_sentence=2, 
+                min_overlap_score=0.05
+            )
+        else:
+            chunk_indices_used = []
+        
+        return fallback_summary, chunk_indices_used
 
 
 def classify_and_summarize_page(
@@ -1668,14 +1844,25 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
     if page_mapping and llm is not None:
         logger.info("Generating brief per-page summaries and section-level page ranges...")
 
-        # Group original chunk content by page number
+        # Group original chunk content by page number and track chunk data
         pages_content: Dict[int, List[str]] = {}
+        page_to_chunks_data: Dict[int, List[Dict[str, Any]]] = {}  # Track chunk data per page
         for chunk in chunks:
             page_num = chunk.metadata.get("page_number")
+            chunk_idx = chunk.metadata.get("chunk_index")
             if page_num and page_num > 0:
                 pages_content.setdefault(page_num, []).append(chunk.page_content)
+                if chunk_idx is not None:
+                    chunk_data = {
+                        'chunk_index': chunk_idx,
+                        'content': chunk.page_content,
+                        'heading': chunk.metadata.get('heading', ''),
+                        'summary': chunk.metadata.get('summary', '')
+                    }
+                    page_to_chunks_data.setdefault(page_num, []).append(chunk_data)
 
         total_pages_for_summary = len(pages_content)
+        page_brief_summaries_with_chunks: Dict[int, Dict[str, Any]] = {}  # Enhanced structure
         for idx, (page_num, contents) in enumerate(sorted(pages_content.items()), start=1):
             page_text = "\n\n".join(contents).strip()
             if not page_text:
@@ -1684,8 +1871,19 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
             if idx == 1 or idx % 10 == 0:
                 logger.info(f"Summarizing page {page_num}/{total_pages_for_summary}...")
 
-            summary_text = summarize_page_brief(page_num, page_text, llm)
-            page_brief_summaries[page_num] = summary_text
+            # Get chunk data for this page
+            page_chunks_data = page_to_chunks_data.get(page_num, [])
+            
+            # Call updated function that returns tuple with intelligent chunk matching
+            summary_text, chunk_indices_used = summarize_page_brief(page_num, page_text, llm, page_chunks_data)
+            
+            # Store enhanced data structure
+            page_brief_summaries[page_num] = summary_text  # Keep backward compatibility
+            page_brief_summaries_with_chunks[page_num] = {
+                "page_number": page_num,
+                "summary": summary_text,
+                "chunk_indices": chunk_indices_used
+            }
 
         # Use LLM once more to group pages into logical ranges with 1–2 sentence summaries
         # and assign a short section title for each range.
@@ -1697,30 +1895,46 @@ def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
                 lines.append(f"Page {p}: {page_brief_summaries[p]}")
             pages_block = "\n".join(lines)
 
-            grouping_prompt = f"""You are analyzing a document that has page numbers associated with its content.
-
-You are given a very short summary for each page.
-
-Your task:
-- Identify logical sections or topic changes in the document.
-- Group consecutive pages into meaningful page ranges (e.g., 1-2, 3-4, 5-7).
-- For each page range, choose a SHORT TITLE (3–8 words) that describes that section.
-- For each page range, write a concise summary (1–2 sentences) describing what the pages in that range contain.
-- Do NOT summarize each page individually; summarize groups of pages that belong to the same topic or section.
-- Ensure page ranges are sequential and do not overlap.
-- Avoid tiny ranges unless the topic clearly changes.
-- Use only the information in the per-page summaries below.
+            grouping_prompt = f"""
+You are reconstructing the functional structure of a document using short per-page summaries.
 
 Per-page summaries:
 {pages_block}
 
-Return your answer as a JSON array ONLY, no extra text, in this exact shape:
+Your task:
+
+Group consecutive pages into FUNCTIONAL SECTIONS — not just topic similarity.
+
+While grouping, detect:
+
+- lifecycle stages (introduction / schedule / definitions / benefits / servicing / claim / grievance)
+- operational clauses (payment rules, benefit triggers, penalties, recoverability)
+- legal or regulatory segments
+- decision points for the reader (opt-in options, cancellation rights, nomination, etc.)
+- tables / schedules / contractual data blocks
+- transition points where document intent changes
+
+Rules:
+
+- Page ranges must be sequential and non-overlapping.
+- Avoid very small ranges unless there is a clear functional shift.
+- Each section title must reflect FUNCTION (not generic topic).
+  Bad title example: "Policy Information"
+  Good title example: "Premium Payment Conditions"
+- Section summaries must describe what the reader can DO or what RULE is defined.
+- Do NOT simply restate page summaries.
+
+Return JSON ONLY in this exact format:
 
 [
-  {{"title": "Section title 1", "start_page": 1, "end_page": 2, "summary": "Brief 1–2 sentence description of what pages 1–2 contain."}},
-  {{"title": "Section title 2", "start_page": 3, "end_page": 4, "summary": "Brief 1–2 sentence description of what pages 3–4 contain."}},
-  {{"title": "Section title 3", "start_page": 5, "end_page": 7, "summary": "Brief 1–2 sentence description of what pages 5–7 contain."}}
-]"""
+  {{
+    "title": "Functional section title",
+    "start_page": 1,
+    "end_page": 3,
+    "summary": "What rule / process / decision logic these pages define."
+  }}
+]
+"""
 
             try:
                 grouping_resp = llm.invoke(grouping_prompt)
@@ -1749,23 +1963,65 @@ Return your answer as a JSON array ONLY, no extra text, in this exact shape:
                             continue
                         if not summary or start_page <= 0 or end_page < start_page:
                             continue
+                        
+                        # Collect all available chunk data from pages in this section range
+                        section_available_chunks = []
+                        for page_num in range(start_page, end_page + 1):
+                            if page_num in page_to_chunks_data:
+                                section_available_chunks.extend(page_to_chunks_data[page_num])
+                        
+                        # Find chunks that actually support this section summary using intelligent matching
+                        if section_available_chunks:
+                            section_chunk_indices = find_supporting_chunks_for_text(
+                                summary,
+                                section_available_chunks,
+                                top_k_per_sentence=3,
+                                min_overlap_score=0.1
+                            )
+                        else:
+                            section_chunk_indices = []
+                        
+                        # Add footnote-style chunk references to summary
+                        chunk_ref = format_chunk_references(section_chunk_indices)
+                        summary_with_refs = summary + chunk_ref if chunk_ref else summary
+                        
                         cleaned.append(
                             {
                                 "title": (item.get("title") or "").strip(),
                                 "start_page": start_page,
                                 "end_page": end_page,
-                                "summary": summary,
+                                "summary": summary_with_refs,
+                                "chunk_indices": section_chunk_indices,
                             }
                         )
                 # Fallback: if parsing failed, fall back to 1-page ranges
                 if not cleaned:
                     for p in sorted(page_brief_summaries.keys()):
+                        # Get chunk data for this page and find relevant chunks
+                        page_chunks_data = page_to_chunks_data.get(p, [])
+                        page_summary = page_brief_summaries[p]
+                        
+                        if page_chunks_data:
+                            page_chunk_indices = find_supporting_chunks_for_text(
+                                page_summary,
+                                page_chunks_data,
+                                top_k_per_sentence=3,
+                                min_overlap_score=0.08
+                            )
+                        else:
+                            page_chunk_indices = []
+                        
+                        # Add footnote-style chunk references to summary
+                        chunk_ref = format_chunk_references(page_chunk_indices)
+                        summary_with_refs = page_summary + chunk_ref if chunk_ref else page_summary
+                        
                         cleaned.append(
                             {
                                 "title": "",
                                 "start_page": p,
                                 "end_page": p,
-                                "summary": page_brief_summaries[p],
+                                "summary": summary_with_refs,
+                                "chunk_indices": page_chunk_indices,
                             }
                         )
 
@@ -1774,12 +2030,31 @@ Return your answer as a JSON array ONLY, no extra text, in this exact shape:
             except Exception as e:
                 logger.warning(f"Failed to group pages into sections; falling back to per-page ranges: {e}")
                 for p in sorted(page_brief_summaries.keys()):
+                    # Get chunk data for this page and find relevant chunks
+                    page_chunks_data = page_to_chunks_data.get(p, [])
+                    page_summary = page_brief_summaries[p]
+                    
+                    if page_chunks_data:
+                        page_chunk_indices = find_supporting_chunks_for_text(
+                            page_summary,
+                            page_chunks_data,
+                            top_k_per_sentence=3,
+                            min_overlap_score=0.08
+                        )
+                    else:
+                        page_chunk_indices = []
+                    
+                    # Add footnote-style chunk references to summary
+                    chunk_ref = format_chunk_references(page_chunk_indices)
+                    summary_with_refs = page_summary + chunk_ref if chunk_ref else page_summary
+                    
                     section_ranges.append(
                         {
                             "title": "",
                             "start_page": p,
                             "end_page": p,
-                            "summary": page_brief_summaries[p],
+                            "summary": summary_with_refs,
+                            "chunk_indices": page_chunk_indices,
                         }
                     )
 
@@ -1793,18 +2068,54 @@ Return your answer as a JSON array ONLY, no extra text, in this exact shape:
             # Additionally, use a third LLM call to generate a single whole-document summary
             # based on the per-page brief summaries.
             try:
-                doc_summary_prompt = f"""You are summarizing an entire document based on very short per-page summaries.
+                doc_summary_prompt = f"""
+You are performing DOCUMENT-LEVEL SYNTHESIS — not general summarization.
+
+You are given extremely short per-page summaries of a document.
 
 Per-page summaries:
 {pages_block}
 
-Your task:
-- Write one high-quality summary of the entire document.
-- Capture its overall purpose, main sections, and what a reader can do with it.
-- Use 7-10 sentences, 2-3 paragraphs.
-- Do not list pages or sections; write it as a continuous paragraph.
+Your task is to reconstruct a precise understanding of the document.
 
-Return ONLY the summary text, with no JSON, no bullet points, and no extra commentary."""
+Follow these steps internally:
+
+1. Identify the EXACT document type.
+   Examples: policy bond, legal contract, claim form, regulatory filing,
+   operational manual, academic report, compliance document.
+
+2. Determine the PURPOSE of the document:
+   - what obligation, transaction, or process it governs.
+
+3. Extract hidden operational meaning across pages:
+   - conditional benefit triggers
+   - financial payout logic
+   - eligibility rules
+   - risk continuation / termination mechanics
+   - lifecycle stages (issuance → premium → benefits → claim → closure)
+   - legal enforcement or recovery rights
+   - irreversible decisions or options available to the reader
+
+4. Infer how the document is STRUCTURED (major logical blocks).
+
+5. Write a dense synthesis — NOT a generic overview.
+
+STRICT RULES:
+- Do NOT start with phrases like:
+  "The document serves as", "This document provides", "This document outlines".
+- Do NOT explain the general topic (e.g., what insurance is).
+- Avoid filler language and safe abstractions.
+- Prefer precise statements about how the document functions.
+
+Output style:
+- 6–9 sentences
+- 1–2 compact paragraphs
+- No bullet points
+- No JSON
+- No meta commentary
+
+Return ONLY the final document synthesis.
+"""
 
                 doc_summary_resp = llm.invoke(doc_summary_prompt)
                 doc_summary_text = (getattr(doc_summary_resp, "content", None) or str(doc_summary_resp)).strip()
@@ -1816,10 +2127,33 @@ Return ONLY the summary text, with no JSON, no bullet points, and no extra comme
                 except Exception:
                     pass
 
+                # Collect all available chunk data from all pages for document-level matching
+                all_document_chunks_data = []
+                for page_chunks_data in page_to_chunks_data.values():
+                    all_document_chunks_data.extend(page_chunks_data)
+                
+                # Find chunks that actually support the document summary using intelligent matching
+                if all_document_chunks_data:
+                    doc_chunk_indices = find_supporting_chunks_for_text(
+                        doc_summary_text,
+                        all_document_chunks_data,
+                        top_k_per_sentence=4,  # Allow more chunks per sentence for document-level
+                        min_overlap_score=0.12  # Slightly higher threshold for document level
+                    )
+                else:
+                    doc_chunk_indices = []
+                
+                # Add footnote-style chunk references to document summary
+                chunk_ref = format_chunk_references(doc_chunk_indices)
+                doc_summary_with_refs = doc_summary_text + chunk_ref if chunk_ref else doc_summary_text
+
                 # Persist whole-document summary as a separate JSON file alongside page summaries
                 doc_summary_path = plan_e_dir / f"{doc_stem}_document_brief_summary.json"
                 with open(doc_summary_path, "w", encoding="utf-8") as f:
-                    json.dump({"summary": doc_summary_text}, f, indent=2, ensure_ascii=False)
+                    json.dump({
+                        "summary": doc_summary_with_refs,
+                        "chunk_indices": doc_chunk_indices
+                    }, f, indent=2, ensure_ascii=False)
                 logger.info(f"Whole-document brief summary saved to: {doc_summary_path}")
             except Exception as e:
                 logger.warning(f"Failed to generate or save whole-document summary: {e}")

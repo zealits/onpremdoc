@@ -139,4 +139,4 @@ python -c "import os; from modelscope import snapshot_download; \
 >> cls = os.path.join(dp, 'onnx', 'PP-OCRv4', 'cls', 'ch_ppocr_mobile_v2.0_cls_infer.onnx'); \
 >> print('DET:', det); print('REC:', rec); print('CLS:', cls)"
 
-
+uv pip install -e .\docling-deepseek-ocr
