@@ -633,7 +633,56 @@ async def get_confidence(
         pages=pages,
     )
 
+@app.get(
+    "/documents/{document_id}/duplicates",
+    tags=["Documents"],
+)
+async def get_duplicate_pages(
+    document_id: str = PathParam(..., description="Document ID"),
+    current_user=Depends(get_current_user),
+):
+    """
+    Get duplicate page detection result JSON for a document.
+    """
 
+    try:
+        document_service.ensure_document_belongs_to_user(document_id, current_user.id)
+    except ValueError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Document {document_id} not found",
+        )
+
+    doc_path = get_document_path(document_id)
+    plan_e_dir = doc_path / "E"
+
+    if not plan_e_dir.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Document not vectorized yet"
+        )
+
+    dup_files = list(plan_e_dir.glob("*_page_duplicates.json"))
+
+    if not dup_files:
+        raise HTTPException(
+            status_code=404,
+            detail="Duplicate page JSON not found. Run vectorization first."
+        )
+
+    dup_path = dup_files[0]
+
+    try:
+        with open(dup_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        logger.error(f"Failed reading duplicate JSON for {document_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to read duplicate data"
+        )
+
+    return data
 @app.get("/documents/{document_id}/pdf", tags=["Documents"])
 async def get_document_pdf(
     document_id: str = PathParam(..., description="Document ID"),

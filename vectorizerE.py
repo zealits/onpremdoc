@@ -13,7 +13,7 @@ from typing import List, Dict, Any, Tuple, Optional
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-
+from utils.page_deduper import detect_duplicates, save_duplicate_json
 # Graph library
 try:
     import networkx as nx
@@ -1641,6 +1641,7 @@ class VectorizerState(TypedDict):
     token_usage: Optional[Dict[str, Any]]  # For economics tracker: embedding_tokens, llm_tokens, total_chunks, truncated_chunks
     # Document-level overview (built from per-page summaries during vectorization)
     doc_overview: Optional[Dict[str, Any]]
+    page_duplicates: Optional[Dict[str, Any]]
 
 # ---------------- WORKFLOW NODES ---------------- 
 def load_markdown(state: VectorizerState) -> VectorizerState:
@@ -1689,6 +1690,36 @@ def load_markdown(state: VectorizerState) -> VectorizerState:
     state["page_mapping"] = page_mapping  # Store for later use in classification
     state["output_folder"] = str(md_folder)  # Store output folder for later use
     logger.info(f"Loaded and chunked {len(chunks)} chunks with structure awareness")
+    return state
+
+def detect_duplicate_pages_node(state):
+
+    markdown_folder = Path(state["markdown_file"])
+
+    md_files = list(markdown_folder.glob("*.md"))
+    if not md_files:
+        return state
+
+    md_path = md_files[0]
+
+    text = md_path.read_text(encoding="utf-8")
+
+    embedder = get_embeddings()
+
+    result = detect_duplicates(text, embedder)
+
+    save_duplicate_json(
+        result,
+        Path(state["output_folder"]),
+        md_path.stem
+    )
+
+    state["page_duplicates"] = result
+
+    logger.info(
+    f"Duplicate page detection complete: {len(result.get('duplicates', []))} duplicate groups"
+)
+
     return state
 
 def process_chunks_one_by_one(state: VectorizerState) -> VectorizerState:
@@ -2515,15 +2546,19 @@ Return ONLY the final document synthesis.
 # ---------------- LANGGRAPH WORKFLOW ---------------- 
 def create_vectorization_workflow() -> StateGraph:
     """Create LangGraph workflow for vectorization"""
+    
     workflow = StateGraph(VectorizerState)
-    
+
     workflow.add_node("load_markdown", load_markdown)
+    workflow.add_node("detect_duplicates", detect_duplicate_pages_node)
     workflow.add_node("process_chunks", process_chunks_one_by_one)
-    
+
     workflow.set_entry_point("load_markdown")
-    workflow.add_edge("load_markdown", "process_chunks")
+
+    workflow.add_edge("load_markdown", "detect_duplicates")
+    workflow.add_edge("detect_duplicates", "process_chunks")
     workflow.add_edge("process_chunks", END)
-    
+
     return workflow.compile()
 
 # ---------------- MAIN FUNCTION ---------------- 
