@@ -2100,56 +2100,61 @@ Return JSON ONLY in this exact format:
             # based on the per-page brief summaries.
             try:
                 doc_summary_prompt = f"""
-You are performing DOCUMENT-LEVEL SYNTHESIS — not general summarization.
-
-You are given extremely short per-page summaries of a document.
+You are summarizing an entire document based on very short per-page summaries.
 
 Per-page summaries:
 {pages_block}
 
-Your task is to reconstruct a precise understanding of the document.
+Your task:
 
-Follow these steps internally:
+1) Write ONE high-quality summary of the ENTIRE document.
+- Capture overall purpose
+- Main sections / flow
+- What user can do with this document
+- Important entities / processes
 
-1. Identify the EXACT document type.
-   Examples: policy bond, legal contract, claim form, regulatory filing,
-   operational manual, academic report, compliance document.
+2) Also generate 8–12 realistic USER QUESTIONS that someone may ask about this document.
 
-2. Determine the PURPOSE of the document:
-   - what obligation, transaction, or process it governs.
+Rules for questions:
+- Must be natural search / chat questions
+- Must be answerable from this document
+- Must cover different parts of document
+- Do NOT hallucinate info not present
+- Questions should be short (max 20 words)
 
-3. Extract hidden operational meaning across pages:
-   - conditional benefit triggers
-   - financial payout logic
-   - eligibility rules
-   - risk continuation / termination mechanics
-   - lifecycle stages (issuance → premium → benefits → claim → closure)
-   - legal enforcement or recovery rights
-   - irreversible decisions or options available to the reader
+Return STRICT JSON:
 
-4. Infer how the document is STRUCTURED (major logical blocks).
-
-5. Write a dense synthesis — NOT a generic overview.
-
-STRICT RULES:
-- Do NOT start with phrases like:
-  "The document serves as", "This document provides", "This document outlines".
-- Do NOT explain the general topic (e.g., what insurance is).
-- Avoid filler language and safe abstractions.
-- Prefer precise statements about how the document functions.
-
-Output style:
-- 6–9 sentences
-- 1–2 compact paragraphs
-- No bullet points
-- No JSON
-- No meta commentary
-
-Return ONLY the final document synthesis.
+{{
+  "doc_summary": "<full summary>",
+  "suggested_queries": [
+      "question 1",
+      "question 2"
+  ]
+}}
 """
 
                 doc_summary_resp = llm.invoke(doc_summary_prompt)
-                doc_summary_text = (getattr(doc_summary_resp, "content", None) or str(doc_summary_resp)).strip()
+
+                raw_text = (getattr(doc_summary_resp, "content", None) or str(doc_summary_resp)).strip()
+                
+                # Track output tokens
+                try:
+                    out_tokens = token_tracker.count_tokens(raw_text)
+                    token_tracker.stats["llm_output_tokens"] = token_tracker.stats.get("llm_output_tokens", 0) + out_tokens
+                except Exception:
+                    pass
+                
+                # Extract JSON safely
+                try:
+                    m = re.search(r"\{.*\}", raw_text, flags=re.DOTALL)
+                    json_str = m.group(0) if m else raw_text
+                    overview_data = json.loads(json_str)
+                except Exception as e:
+                    logger.warning(f"Failed to parse document overview JSON: {e}")
+                    overview_data = {}
+                
+                doc_summary_text = overview_data.get("doc_summary", "")
+                suggested_queries = overview_data.get("suggested_queries", [])
 
                 # Track approximate LLM output tokens for document-level summary call
                 try:
@@ -2186,6 +2191,23 @@ Return ONLY the final document synthesis.
                         "chunk_indices": doc_chunk_indices
                     }, f, indent=2, ensure_ascii=False)
                 logger.info(f"Whole-document brief summary saved to: {doc_summary_path}")
+                overview_json_path = plan_e_dir / f"{doc_stem}_doc_overview.json"
+                try:
+                    with open(overview_json_path, "w", encoding="utf-8") as f:
+                        json.dump(
+                            {
+                                "doc_summary": doc_summary_text,
+                                "suggested_queries": suggested_queries,
+                                "chunk_indices": doc_chunk_indices
+                            },
+                            f,
+                            indent=2,
+                            ensure_ascii=False
+                        )
+                    logger.info(f"Document overview saved to: {overview_json_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to save document overview JSON: {e}")
+
             except Exception as e:
                 logger.warning(f"Failed to generate or save whole-document summary: {e}")
         except Exception as e:

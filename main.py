@@ -549,6 +549,52 @@ async def get_document(
     return doc_info
 
 
+@app.get(
+    "/documents/{document_id}/suggested-questions",
+    tags=["Documents"],
+)
+async def get_suggested_questions(
+    document_id: str = PathParam(..., description="Document ID"),
+    current_user=Depends(get_current_user),
+):
+    """
+    Returns suggested user questions generated during vectorization
+    """
+
+    # Ownership check
+    try:
+        document_service.ensure_document_belongs_to_user(
+            document_id,
+            current_user.id
+        )
+    except ValueError:
+        raise HTTPException(
+            status_code=404,
+            detail="Document not found"
+        )
+
+    doc_info = document_service.get_document_info(document_id)
+
+    if not doc_info:
+        raise HTTPException(
+            status_code=404,
+            detail="Document info not found"
+        )
+
+    suggested = doc_info.get("suggested_queries")
+
+    if not suggested:
+        return {
+            "document_id": document_id,
+            "suggested_questions": [],
+            "message": "Suggested questions not generated yet"
+        }
+
+    return {
+        "document_id": document_id,
+        "suggested_questions": suggested
+    }
+    
 @app.get("/documents/{document_id}/markdown", tags=["Documents"])
 async def get_markdown(
     document_id: str = PathParam(..., description="Document ID"),
