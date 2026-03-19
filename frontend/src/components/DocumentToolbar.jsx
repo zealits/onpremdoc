@@ -136,6 +136,8 @@ export default function DocumentToolbar({
         summaryFetching={summaryFetching}
         refetchSummary={refetchSummary}
         documentName={documentName}
+        documentId={documentId}
+        onHighlightChunk={onHighlightChunk}
       />
 
       {/* Document Index Modal */}

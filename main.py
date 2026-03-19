@@ -300,6 +300,11 @@ class DocumentSummaryResponse(BaseModel):
     summary: str
 
 
+class ChunkIndicesRequest(BaseModel):
+    """Request body for looking up chunks by their chunk indices."""
+    chunk_indices: List[int] = Field(default_factory=list)
+
+
 # ---------------- LIFECYCLE MANAGEMENT ----------------
 
 
@@ -899,6 +904,32 @@ async def get_document_summary(
         raise HTTPException(status_code=500, detail="Failed to load document summary")
 
     return DocumentSummaryResponse(document_id=document_id, summary=text)
+
+
+@app.post(
+    "/documents/{document_id}/chunks",
+    tags=["Documents"],
+)
+async def get_document_chunks(
+    document_id: str = PathParam(..., description="Document ID"),
+    body: ChunkIndicesRequest = None,
+    current_user=Depends(get_current_user),
+):
+    """
+    Look up chunk payloads by chunk indices.
+
+    Used by the frontend to make summary citations clickable (scroll + highlight).
+    """
+    try:
+        document_service.ensure_document_belongs_to_user(document_id, current_user.id)
+        indices = (body.chunk_indices if body else []) or []
+        chunks = document_service.get_chunks_by_indices(document_id, indices)
+        return chunks
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error getting document chunks for {document_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to load chunk payloads")
 
 
 def vectorize_background(document_id: str):

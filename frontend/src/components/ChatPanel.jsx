@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
-import { queryDocumentStream } from "../api/client";
+import { queryDocumentStream, getDocumentChunks } from "../api/client";
 import { useDocument } from "../api/hooks";
 
 const DEFAULT_SUGGESTED = ["What is this document about?", "Summarize the main points."];
@@ -154,6 +154,7 @@ function ProcessingInterface({ documentName, documentStatus }) {
 const CITATION_REGEX = /\[C(\d+)\]/g;
 const CHAT_STORAGE_KEY = "doconprem-chat";
 const SESSION_STORAGE_KEY_PREFIX = "doconprem-session-";
+const MAX_VISIBLE_QUESTIONS = 4;
 
 function getStoredSessionId(documentId) {
   if (!documentId) return null;
@@ -232,6 +233,76 @@ function rehypeCitationSpans() {
     }
     visit(tree, null, 0);
   };
+}
+
+function expandChunkReferenceGroups(text) {
+  if (typeof text !== "string") return "";
+  let out = text;
+
+  // Convert footnote-style `^[C1,C5,C12]` into individual citation tokens: `[C1] [C5] [C12]`
+  out = out.replace(/\^\[\s*([^\]]+?)\s*\]/g, (match, inner) => {
+    const ids = Array.from(String(inner).matchAll(/C(\d+)/gi)).map((m) => m[1]);
+    if (!ids.length) return match;
+    return ids.map((id) => `[C${id}]`).join(" ");
+  });
+
+  // Convert bracket-group style `[C1,C5,C12]` into individual citation tokens.
+  // (We keep it strict so we don't transform normal markdown link text.)
+  out = out.replace(/\[\s*(C\d+(?:\s*,\s*C\d+)*)\s*\]/gi, (match, inner) => {
+    const ids = Array.from(String(inner).matchAll(/C(\d+)/gi)).map((m) => m[1]);
+    if (!ids.length) return match;
+    return ids.map((id) => `[C${id}]`).join(" ");
+  });
+
+  return out;
+}
+
+function SummaryCitationButton({ chunkId, fetchChunkById, onHighlightChunk }) {
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handleClick = async () => {
+    if (isLoading) return;
+    if (!fetchChunkById || typeof fetchChunkById !== "function") return;
+    if (!onHighlightChunk || typeof onHighlightChunk !== "function") return;
+
+    setIsLoading(true);
+    try {
+      const chunk = await fetchChunkById(chunkId);
+      if (chunk) {
+        const contentStr = Array.isArray(chunk.content) ? chunk.content.join("\n") : chunk.content ?? "";
+        const lines = Array.isArray(chunk.content)
+          ? chunk.content.filter((s) => typeof s === "string" && s.trim().length > 0)
+          : [];
+
+        onHighlightChunk({
+          pageNumber: chunk.page_number,
+          text: contentStr,
+          sectionTitle: chunk.section_title,
+          heading: chunk.heading,
+          lines,
+        });
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const baseClasses =
+    "inline-flex align-middle px-1.5 py-0.5 rounded text-xs font-medium cursor-pointer transition-all duration-200 touch-manipulation whitespace-nowrap";
+  const sourceClasses =
+    "text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 hover:border-indigo-300 dark:text-indigo-300 dark:hover:text-indigo-200 dark:bg-indigo-900/30 dark:hover:bg-indigo-900/50 dark:border-indigo-800 dark:hover:border-indigo-600 hover:scale-105 active:scale-95 hover:shadow-sm";
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={isLoading}
+      className={`${baseClasses} ${sourceClasses}`}
+      title="Go to this source (scroll + highlight)"
+    >
+      {isLoading ? "…" : `${chunkId}`}
+    </button>
+  );
 }
 
 function CitationButton({ chunkId, chunks, onHighlight, variant = "citation" }) {
@@ -336,6 +407,26 @@ function ChatPanel({
   useEffect(() => {
     optimizeScrollForMobile();
   }, [optimizeScrollForMobile]);
+
+  // Cache chunk payloads so repeated clicks on `[C#]` are fast.
+  const chunkLookupCacheRef = useRef(new Map());
+  const fetchChunkById = useCallback(
+    async (chunkId) => {
+      const id = Number(chunkId);
+      if (!Number.isFinite(id)) return null;
+      if (chunkLookupCacheRef.current.has(id)) return chunkLookupCacheRef.current.get(id);
+
+      try {
+        const chunks = await getDocumentChunks(documentId, [id]);
+        const chunk = Array.isArray(chunks) ? chunks.find((c) => c.chunk_index === id) : null;
+        if (chunk) chunkLookupCacheRef.current.set(id, chunk);
+        return chunk;
+      } catch {
+        return null;
+      }
+    },
+    [documentId]
+  );
 
   // Sequential typing effect function
   const startSequentialTypingEffect = (fullText, messageIndex, messageMetadata) => {
@@ -629,13 +720,51 @@ function ChatPanel({
                   <span className="text-sm">Generating summary…</span>
                 </div>
               ) : (
-                <div className="bg-gradient-to-br from-gray-50 to-blue-50 dark:from-slate-800/50 dark:to-slate-700/50 rounded-xl p-5 border border-gray-200 dark:border-slate-600/30">
+                <div className="summary-surface rounded-xl p-5 border">
                   <div className="text-sm leading-7 space-y-4 text-inherit">
-                    {documentSummary?.split('\n\n').map((paragraph, index) => (
-                      <p key={index} className="text-gray-800 dark:text-gray-200 last:mb-0">
-                        {paragraph.trim()}
-                      </p>
-                    )) || documentSummary}
+                    <ReactMarkdown
+                      rehypePlugins={[rehypeCitationSpans]}
+                      components={{
+                        p: ({ node, ...props }) => <p {...props} className="summary-text last:mb-0" />,
+                        span: (props) => {
+                          let citationId =
+                            props["data-citation"] ??
+                            props.dataCitation ??
+                            props.node?.properties?.["data-citation"] ??
+                            props.node?.properties?.dataCitation;
+
+                          if (citationId == null || citationId === "") {
+                            const child = props.children;
+                            const str =
+                              typeof child === "string"
+                                ? child
+                                : Array.isArray(child) && child.length === 1 && typeof child[0] === "string"
+                                  ? child[0]
+                                  : null;
+                            const m = str && str.match(/^\[C(\d+)\]$/);
+                            if (m) citationId = m[1];
+                          }
+
+                          if (citationId != null && citationId !== "") {
+                            const id = parseInt(String(citationId), 10);
+                            if (!Number.isNaN(id)) {
+                              return (
+                                <SummaryCitationButton
+                                  chunkId={id}
+                                  fetchChunkById={fetchChunkById}
+                                  onHighlightChunk={onHighlightChunk}
+                                />
+                              );
+                            }
+                          }
+
+                          const { node, ...spanProps } = props;
+                          return <span {...spanProps} />;
+                        },
+                      }}
+                    >
+                      {expandChunkReferenceGroups(documentSummary || "")}
+                    </ReactMarkdown>
                   </div>
                 </div>
               )}
@@ -643,18 +772,18 @@ function ChatPanel({
           )}
           {messages.length === 0 && (
             <div className="space-y-3 sm:space-y-4 mt-2">
-              <p className="font-medium text-sm sm:text-base text-inherit">Ask anything about this document.</p>
-              <div className={`grid grid-cols-1 ${isMobileDevice ? 'gap-2' : 'sm:grid-cols-2 gap-2 sm:gap-2.5'} suggested-questions`}>
-                {suggested.map((q) => (
+              <p className="ask-prompt font-medium text-sm sm:text-base">Ask anything about this document.</p>
+              <div className="flex flex-col items-start gap-2.5 suggested-questions">
+                {suggested.slice(0, MAX_VISIBLE_QUESTIONS).map((q) => (
                   <button
                     key={q}
                     type="button"
                     onClick={() => send(q)}
-                    className={`px-3 sm:px-4 py-3 sm:py-2.5 rounded-lg sm:rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 text-xs sm:text-sm hover:bg-indigo-100 dark:hover:bg-indigo-900/50 hover:border-indigo-300 dark:hover:border-indigo-600 transition-all font-medium touch-manipulation active:scale-95 text-left ${
-                      isMobileDevice ? 'min-h-[48px] flex items-center' : ''
-                    }`}
+                    className="question-chip group inline-flex w-auto max-w-full self-start items-center px-3.5 sm:px-4 py-2.5 sm:py-2.5 rounded-xl sm:rounded-2xl border-0 bg-slate-100/90 dark:bg-slate-800/75 text-slate-700 dark:text-slate-200 text-xs sm:text-sm transition-all duration-200 font-medium touch-manipulation active:scale-[0.98] text-left"
                   >
-                    {q}
+                    <span className="block max-w-full whitespace-nowrap overflow-hidden text-ellipsis leading-snug transition-colors duration-200 group-hover:text-indigo-700 dark:group-hover:text-indigo-200">
+                      {q}
+                    </span>
                   </button>
                 ))}
               </div>
@@ -777,17 +906,17 @@ function ChatPanel({
                             </p>
                           </div>
                         </div>
-                        <div className="grid grid-cols-1 gap-2 sm:gap-2.5">
-                          {msg.next_questions.map((question, j) => (
+                        <div className="flex flex-col items-start gap-2.5 sm:gap-3">
+                          {msg.next_questions.slice(0, MAX_VISIBLE_QUESTIONS).map((question, j) => (
                             <button
                               key={j}
                               type="button"
                               onClick={() => send(question)}
-                              className="group flex w-full items-start gap-2 rounded-lg sm:rounded-xl border border-indigo-200 bg-white/80 px-3 py-2.5 text-left text-xs sm:text-sm text-slate-800 hover:bg-indigo-50 hover:border-indigo-400/70 dark:border-indigo-500/20 dark:bg-indigo-500/5 dark:text-indigo-50 dark:hover:bg-indigo-500/15 transition-all disabled:opacity-60 disabled:cursor-not-allowed touch-manipulation active:scale-98 min-h-[44px]"
+                              className="question-chip group inline-flex w-auto max-w-full self-start items-center gap-2 rounded-xl sm:rounded-2xl border-0 bg-slate-100/90 dark:bg-slate-800/75 px-3.5 py-2.5 text-left text-xs sm:text-sm text-slate-700 dark:text-slate-200 transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed touch-manipulation active:scale-[0.98]"
                               disabled={isStreaming}
                             >
-                              <span className="mt-1 h-1.5 w-1.5 rounded-full bg-indigo-400 group-hover:bg-indigo-500 dark:group-hover:bg-indigo-300 flex-shrink-0" />
-                              <span className="whitespace-normal break-words leading-snug">
+                              <span className="mt-1 h-1.5 w-1.5 rounded-full bg-indigo-400/80 group-hover:bg-indigo-500 dark:group-hover:bg-indigo-300 flex-shrink-0 transition-colors duration-200" />
+                              <span className="block max-w-full whitespace-nowrap overflow-hidden text-ellipsis leading-snug transition-colors duration-200 group-hover:text-indigo-700 dark:group-hover:text-indigo-200">
                                 {question}
                               </span>
                             </button>

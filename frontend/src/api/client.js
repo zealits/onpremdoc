@@ -101,6 +101,14 @@ export async function getDocumentSummary(documentId) {
   return request(`/documents/${documentId}/summary`)
 }
 
+export async function getDocumentChunks(documentId, chunkIndices) {
+  return request(`/documents/${documentId}/chunks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chunk_indices: chunkIndices || [] }),
+  })
+}
+
 export async function uploadPdf(file) {
   const form = new FormData()
   form.append('file', file)

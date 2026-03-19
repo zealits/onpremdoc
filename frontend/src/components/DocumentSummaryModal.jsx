@@ -1,4 +1,104 @@
-import { useEffect } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import { getDocumentChunks } from '../api/client'
+
+function rehypeCitationSpans() {
+  return (tree) => {
+    function visit(node, parent, idx) {
+      if (parent?.type === 'element' && (parent.properties?.['data-citation'] || parent.properties?.dataCitation)) return
+      if (node.type === 'text' && node.value && /\[C\d+\]/.test(node.value)) {
+        const parts = node.value.split(/(\[C(\d+)\])/g)
+        const newNodes = []
+        for (let i = 0; i < parts.length; i++) {
+          if (i % 3 === 0 && parts[i]) newNodes.push({ type: 'text', value: parts[i] })
+          else if (i % 3 === 2)
+            newNodes.push({
+              type: 'element',
+              tagName: 'span',
+              properties: {
+                'data-citation': parts[i],
+                className: 'chunk-citation',
+              },
+              children: [{ type: 'text', value: `[C${parts[i]}]` }],
+            })
+        }
+        if (parent && typeof idx === 'number' && newNodes.length) {
+          parent.children.splice(idx, 1, ...newNodes)
+        }
+        return
+      }
+      if (node.children) for (let i = 0; i < node.children.length; i++) visit(node.children[i], node, i)
+    }
+    visit(tree, null, 0)
+  }
+}
+
+function expandChunkReferenceGroups(text) {
+  if (typeof text !== 'string') return ''
+  let out = text
+
+  // Convert footnote-style `^[C1,C5,C12]` into individual tokens: `[C1] [C5] [C12]`
+  out = out.replace(/\^\[\s*([^\]]+?)\s*\]/g, (match, inner) => {
+    const ids = Array.from(String(inner).matchAll(/C(\d+)/gi)).map((m) => m[1])
+    if (!ids.length) return match
+    return ids.map((id) => `[C${id}]`).join(' ')
+  })
+
+  // Convert bracket-group style `[C1,C5,C12]` into individual tokens.
+  out = out.replace(/\[\s*(C\d+(?:\s*,\s*C\d+)*)\s*\]/gi, (match, inner) => {
+    const ids = Array.from(String(inner).matchAll(/C(\d+)/gi)).map((m) => m[1])
+    if (!ids.length) return match
+    return ids.map((id) => `[C${id}]`).join(' ')
+  })
+
+  return out
+}
+
+function SummaryCitationButton({ chunkId, fetchChunkById, onHighlightChunk }) {
+  const [isLoading, setIsLoading] = useState(false)
+
+  const handleClick = async () => {
+    if (isLoading) return
+    if (!fetchChunkById || typeof fetchChunkById !== 'function') return
+    if (!onHighlightChunk || typeof onHighlightChunk !== 'function') return
+
+    setIsLoading(true)
+    try {
+      const chunk = await fetchChunkById(chunkId)
+      if (chunk) {
+        const contentStr = Array.isArray(chunk.content) ? chunk.content.join("\n") : chunk.content ?? ''
+        const lines = Array.isArray(chunk.content) ? chunk.content.filter((s) => typeof s === 'string' && s.trim().length > 0) : []
+
+        onHighlightChunk({
+          pageNumber: chunk.page_number,
+          text: contentStr,
+          sectionTitle: chunk.section_title,
+          heading: chunk.heading,
+          lines,
+        })
+      }
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const baseClasses =
+    'inline-flex align-middle px-1.5 py-0.5 rounded text-xs font-medium cursor-pointer transition-all duration-200 touch-manipulation whitespace-nowrap'
+  const sourceClasses =
+    'text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 hover:border-indigo-300 dark:text-indigo-300 dark:hover:text-indigo-200 dark:bg-indigo-900/30 dark:hover:bg-indigo-900/50 dark:border-indigo-800 dark:hover:border-indigo-600 hover:scale-105 active:scale-95 hover:shadow-sm'
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={isLoading}
+      className={`${baseClasses} ${sourceClasses}`}
+      title="Go to this source (scroll + highlight)"
+    >
+      {isLoading ? '…' : `${chunkId}`}
+    </button>
+  )
+}
 
 export default function DocumentSummaryModal({
   isOpen,
@@ -9,6 +109,8 @@ export default function DocumentSummaryModal({
   summaryFetching,
   refetchSummary,
   documentName,
+  documentId,
+  onHighlightChunk,
 }) {
   useEffect(() => {
     if (isOpen) {
@@ -26,6 +128,24 @@ export default function DocumentSummaryModal({
 
   const displaySummary = summaryData?.summary ?? summaryText
   const loadingSummary = isSummaryLoading || summaryFetching
+
+  const chunkLookupCacheRef = useRef(new Map())
+  const fetchChunkById = useCallback(
+    async (chunkId) => {
+      const id = Number(chunkId)
+      if (!Number.isFinite(id)) return null
+      if (chunkLookupCacheRef.current.has(id)) return chunkLookupCacheRef.current.get(id)
+      try {
+        const chunks = await getDocumentChunks(documentId, [id])
+        const chunk = Array.isArray(chunks) ? chunks.find((c) => c.chunk_index === id) : null
+        if (chunk) chunkLookupCacheRef.current.set(id, chunk)
+        return chunk
+      } catch {
+        return null
+      }
+    },
+    [documentId]
+  )
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
@@ -79,11 +199,54 @@ export default function DocumentSummaryModal({
                 
                 <div className="summary-content bg-gradient-to-br from-gray-50 to-blue-50 dark:from-gray-900 dark:to-slate-800 rounded-xl p-6 border border-gray-100 dark:border-gray-700">
                   <div className="text-gray-800 dark:text-gray-200 leading-relaxed text-base space-y-4">
-                    {displaySummary.split('\n\n').map((paragraph, index) => (
-                      <p key={index} className="m-0 last:mb-0 first-line:font-medium first-line:tracking-wide">
-                        {paragraph.trim()}
-                      </p>
-                    ))}
+                    <ReactMarkdown
+                      rehypePlugins={[rehypeCitationSpans]}
+                      components={{
+                        p: ({ node, ...props }) => (
+                          <p
+                            {...props}
+                            className="m-0 last:mb-0 first-line:font-medium first-line:tracking-wide"
+                          />
+                        ),
+                        span: (props) => {
+                          let citationId =
+                            props['data-citation'] ??
+                            props.dataCitation ??
+                            props.node?.properties?.['data-citation'] ??
+                            props.node?.properties?.dataCitation
+
+                          if (citationId == null || citationId === '') {
+                            const child = props.children
+                            const str =
+                              typeof child === 'string'
+                                ? child
+                                : Array.isArray(child) && child.length === 1 && typeof child[0] === 'string'
+                                  ? child[0]
+                                  : null
+                            const m = str && str.match(/^\[C(\d+)\]$/)
+                            if (m) citationId = m[1]
+                          }
+
+                          if (citationId != null && citationId !== '') {
+                            const id = parseInt(String(citationId), 10)
+                            if (!Number.isNaN(id)) {
+                              return (
+                                <SummaryCitationButton
+                                  chunkId={id}
+                                  fetchChunkById={fetchChunkById}
+                                  onHighlightChunk={onHighlightChunk}
+                                />
+                              )
+                            }
+                          }
+
+                          const { node, ...spanProps } = props
+                          return <span {...spanProps} />
+                        },
+                      }}
+                    >
+                      {expandChunkReferenceGroups(displaySummary)}
+                    </ReactMarkdown>
                   </div>
                 </div>
 

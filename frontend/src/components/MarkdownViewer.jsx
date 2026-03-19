@@ -150,20 +150,20 @@ function findRangesInFullText(normalizedFullText, candidates, anchorPos) {
     const cLower = cand.toLowerCase()
     let idx = lower.indexOf(cLower)
     if (idx < 0) continue
-    if (anchorPos != null) {
-      let best = idx
-      let bestDist = Math.abs(idx - anchorPos)
-      while (idx >= 0) {
-        const d = Math.abs(idx - anchorPos)
-        if (d < bestDist) {
-          bestDist = d
-          best = idx
-        }
-        idx = lower.indexOf(cLower, idx + 1)
-      }
-      idx = best
+
+    const matchesForCandidate = []
+    while (idx >= 0) {
+      matchesForCandidate.push({ start: idx, end: idx + cand.length })
+      idx = lower.indexOf(cLower, idx + 1)
     }
-    ranges.push({ start: idx, end: idx + cand.length })
+
+    // Keep all occurrences so multi-point references highlight all matching lines.
+    // If anchor is available, sort by distance so we still prioritize the closest block for scrolling.
+    if (anchorPos != null) {
+      matchesForCandidate.sort((a, b) => Math.abs(a.start - anchorPos) - Math.abs(b.start - anchorPos))
+    }
+
+    ranges.push(...matchesForCandidate)
   }
   return ranges
 }
@@ -228,14 +228,11 @@ function findTextAndScroll(container, _searchText, _sectionTitle, _heading, line
   const matchElements = rangesToElements(segments, ranges)
 
   if (matchElements.length > 0) {
+    // Apply the same highlight lifecycle to every matched point.
+    // First match is used as the scroll anchor.
     highlightElementAndScroll(matchElements[0])
     for (let i = 1; i < matchElements.length; i++) {
-      const el = matchElements[i]
-      el.classList.add('markdown-highlight')
-      window.clearTimeout(el._markdownHighlightTimeout)
-      el._markdownHighlightTimeout = window.setTimeout(() => {
-        el.classList.remove('markdown-highlight')
-      }, 2000)
+      highlightElementAndScroll(matchElements[i])
     }
   }
 }

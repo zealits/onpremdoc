@@ -820,6 +820,74 @@ def get_document_markdown(document_id: str) -> str:
     return md_path.read_text(encoding="utf-8")
 
 
+def get_chunks_by_indices(document_id: str, chunk_indices: List[int]) -> List[Dict[str, Any]]:
+    """
+    Fetch chunk objects (with content lines) for the given chunk indices.
+
+    This mirrors the chunk payload shape used by `query_document(... include_chunks=True)`
+    so the frontend can reuse the existing markdown scroll + highlight logic.
+    """
+    if not chunk_indices:
+        return []
+
+    # Keep caller-provided order (deduping while preserving order).
+    seen = set()
+    ordered_ids: List[int] = []
+    for idx in chunk_indices:
+        try:
+            cid = int(idx)
+        except Exception:
+            continue
+        if cid in seen:
+            continue
+        seen.add(cid)
+        ordered_ids.append(cid)
+
+    if not ordered_ids:
+        return []
+
+    resources = _loaded_agents.get(document_id)
+    if not resources:
+        resources = load_agent_for_document(document_id)
+
+    all_chunks = list(resources.get("chunks", [])) if resources else []
+    id_set = set(ordered_ids)
+    order_map = {cid: i for i, cid in enumerate(ordered_ids)}
+
+    out: List[Dict[str, Any]] = []
+    for ch in all_chunks:
+        cid = ch.metadata.get("chunk_index")
+        if cid is None or cid not in id_set:
+            continue
+
+        raw_lines = ch.metadata.get("raw_content_lines")
+        content_for_api = raw_lines if isinstance(raw_lines, list) else ch.page_content
+
+        out.append(
+            {
+                "chunk_index": cid,
+                "content": content_for_api,
+                "heading": ch.metadata.get("heading", "No heading"),
+                "section_path": ch.metadata.get("section_path", ""),
+                "section_title": ch.metadata.get("section_title", ""),
+                "page_number": ch.metadata.get("page_number"),
+                "page_classification": ch.metadata.get("page_classification"),
+                "summary": ch.metadata.get("summary", ""),
+                "chunk_type": ch.metadata.get("chunk_type", "text"),
+                "has_table": ch.metadata.get("has_table", False),
+                "table_context": ch.metadata.get("table_context"),
+                "start_line": ch.metadata.get("start_line"),
+                "content_length": len(ch.page_content) if hasattr(ch, "page_content") else 0,
+                "retrieval_source": "summary",
+                "similarity_score": None,
+                "rerank_score": None,
+            }
+        )
+
+    out.sort(key=lambda c: order_map.get(c["chunk_index"], 1_000_000))
+    return out
+
+
 def get_document_brief_summary(document_id: str) -> str:
     """
     Return the whole-document brief summary text for a document.
