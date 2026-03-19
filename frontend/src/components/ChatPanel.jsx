@@ -779,9 +779,9 @@ function ChatPanel({
                     key={q}
                     type="button"
                     onClick={() => send(q)}
-                    className="question-chip group inline-flex w-auto max-w-full self-start items-center px-3.5 sm:px-4 py-2.5 sm:py-2.5 rounded-xl sm:rounded-2xl border-0 bg-slate-100/90 dark:bg-slate-800/75 text-slate-700 dark:text-slate-200 text-xs sm:text-sm transition-all duration-200 font-medium touch-manipulation active:scale-[0.98] text-left"
+                    className="question-chip group inline-flex w-auto max-w-full self-start items-center px-3.5 sm:px-4 py-2.5 sm:py-2.5 rounded-xl sm:rounded-2xl border-0 text-xs sm:text-sm transition-all duration-200 font-medium touch-manipulation active:scale-[0.98] text-left"
                   >
-                    <span className="block max-w-full whitespace-nowrap overflow-hidden text-ellipsis leading-snug transition-colors duration-200 group-hover:text-indigo-700 dark:group-hover:text-indigo-200">
+                    <span className="question-chip-label block max-w-full whitespace-nowrap overflow-hidden text-ellipsis leading-snug transition-colors duration-200">
                       {q}
                     </span>
                   </button>
@@ -912,11 +912,11 @@ function ChatPanel({
                               key={j}
                               type="button"
                               onClick={() => send(question)}
-                              className="question-chip group inline-flex w-auto max-w-full self-start items-center gap-2 rounded-xl sm:rounded-2xl border-0 bg-slate-100/90 dark:bg-slate-800/75 px-3.5 py-2.5 text-left text-xs sm:text-sm text-slate-700 dark:text-slate-200 transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed touch-manipulation active:scale-[0.98]"
+                              className="question-chip group inline-flex w-auto max-w-full self-start items-center gap-2 rounded-xl sm:rounded-2xl border-0 px-3.5 py-2.5 text-left text-xs sm:text-sm transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed touch-manipulation active:scale-[0.98]"
                               disabled={isStreaming}
                             >
-                              <span className="mt-1 h-1.5 w-1.5 rounded-full bg-indigo-400/80 group-hover:bg-indigo-500 dark:group-hover:bg-indigo-300 flex-shrink-0 transition-colors duration-200" />
-                              <span className="block max-w-full whitespace-nowrap overflow-hidden text-ellipsis leading-snug transition-colors duration-200 group-hover:text-indigo-700 dark:group-hover:text-indigo-200">
+                              <span className="question-chip-dot mt-1 h-1.5 w-1.5 rounded-full flex-shrink-0 transition-colors duration-200" />
+                              <span className="question-chip-label block max-w-full whitespace-nowrap overflow-hidden text-ellipsis leading-snug transition-colors duration-200">
                                 {question}
                               </span>
                             </button>

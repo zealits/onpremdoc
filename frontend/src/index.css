@@ -588,6 +588,8 @@ html {
 .question-chip {
   position: relative;
   overflow: hidden;
+  background-color: rgba(30, 41, 59, 0.72);
+  color: #e2e8f0;
   box-shadow: 0 1px 1px rgba(15, 23, 42, 0.04);
 }
 
@@ -606,7 +608,7 @@ html {
 }
 
 .question-chip:hover {
-  background-color: rgba(238, 242, 255, 0.95);
+  background-color: rgba(49, 46, 129, 0.32);
 }
 
 .question-chip:hover::after {
@@ -614,12 +616,41 @@ html {
   transform: scale(1.08);
 }
 
-html[data-theme='dark'] .question-chip:hover {
-  background-color: rgba(49, 46, 129, 0.28);
+.question-chip-label {
+  color: #e2e8f0;
+}
+
+.question-chip-dot {
+  background-color: rgba(129, 140, 248, 0.85);
+}
+
+.question-chip:hover .question-chip-label {
+  color: #eef2ff;
 }
 
 html[data-theme='dark'] .question-chip::after {
   background: radial-gradient(circle, rgba(129, 140, 248, 0.36) 0%, rgba(167, 139, 250, 0.22) 45%, rgba(167, 139, 250, 0) 76%);
+}
+
+html[data-theme='light'] .question-chip {
+  background-color: rgba(241, 245, 249, 0.95);
+  color: #334155;
+}
+
+html[data-theme='light'] .question-chip:hover {
+  background-color: rgba(238, 242, 255, 0.95);
+}
+
+html[data-theme='light'] .question-chip-label {
+  color: #334155;
+}
+
+html[data-theme='light'] .question-chip-dot {
+  background-color: rgba(99, 102, 241, 0.65);
+}
+
+html[data-theme='light'] .question-chip:hover .question-chip-label {
+  color: #4338ca;
 }
 
 /* Email modal: theme-aware inputs and buttons */
