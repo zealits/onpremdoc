@@ -126,7 +126,7 @@ standalone commands to check standalone files
 
 
 .venv/scripts/activate
-python -m uvicorn main:app --port 8000
+python -m uvicorn main:app --port 3091
 
 
 for paddle
