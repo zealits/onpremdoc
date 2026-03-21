@@ -155,6 +155,7 @@ const CITATION_REGEX = /\[C(\d+)\]/g;
 const CHAT_STORAGE_KEY = "doconprem-chat";
 const SESSION_STORAGE_KEY_PREFIX = "doconprem-session-";
 const MAX_VISIBLE_QUESTIONS = 4;
+const MAX_VISIBLE_SUMMARY_CITATIONS = 7;
 
 function getStoredSessionId(documentId) {
   if (!documentId) return null;
@@ -692,6 +693,9 @@ function ChatPanel({
     );
   }
 
+  // Limit document summary citation chips to avoid long noisy rows.
+  const visibleSummaryCitationIds = new Set();
+
   return (
     <div className="chat-shell flex flex-col h-full min-h-0 px-2 py-2 sm:px-3 sm:py-3 md:px-4 md:py-4 md:border-l border-slate-800 mobile-safe-area">
       <div className="flex flex-col h-full min-h-0 rounded-xl md:rounded-2xl theme-card shadow-lg md:shadow-[0_18px_60px_rgba(15,23,42,0.25)]">
@@ -748,6 +752,13 @@ function ChatPanel({
                           if (citationId != null && citationId !== "") {
                             const id = parseInt(String(citationId), 10);
                             if (!Number.isNaN(id)) {
+                              if (
+                                !visibleSummaryCitationIds.has(id) &&
+                                visibleSummaryCitationIds.size >= MAX_VISIBLE_SUMMARY_CITATIONS
+                              ) {
+                                return null;
+                              }
+                              visibleSummaryCitationIds.add(id);
                               return (
                                 <SummaryCitationButton
                                   chunkId={id}

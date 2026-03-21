@@ -112,6 +112,8 @@ export default function DocumentSummaryModal({
   documentId,
   onHighlightChunk,
 }) {
+  const MAX_VISIBLE_CITATIONS = 7
+
   useEffect(() => {
     if (isOpen) {
       document.body.style.overflow = 'hidden'
@@ -123,8 +125,6 @@ export default function DocumentSummaryModal({
       document.body.style.overflow = 'unset'
     }
   }, [isOpen])
-
-  if (!isOpen) return null
 
   const displaySummary = summaryData?.summary ?? summaryText
   const loadingSummary = isSummaryLoading || summaryFetching
@@ -146,6 +146,11 @@ export default function DocumentSummaryModal({
     },
     [documentId]
   )
+
+  if (!isOpen) return null
+
+  // Keep only first N unique citation chips visible in the rendered summary.
+  const visibleCitationIds = new Set()
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
@@ -230,6 +235,10 @@ export default function DocumentSummaryModal({
                           if (citationId != null && citationId !== '') {
                             const id = parseInt(String(citationId), 10)
                             if (!Number.isNaN(id)) {
+                              if (!visibleCitationIds.has(id) && visibleCitationIds.size >= MAX_VISIBLE_CITATIONS) {
+                                return null
+                              }
+                              visibleCitationIds.add(id)
                               return (
                                 <SummaryCitationButton
                                   chunkId={id}
