@@ -180,6 +180,9 @@ export async function queryDocumentStream(documentId, query, sessionId = null, i
       if (!line) continue
       try {
         const data = JSON.parse(line)
+        // Use warn level so it still shows when "Info" logs are hidden in DevTools.
+        // eslint-disable-next-line no-console
+        console.warn('query stream chunk:', data)
         if (typeof onChunk === 'function') {
           onChunk(data)
         }
@@ -196,6 +199,8 @@ export async function queryDocumentStream(documentId, query, sessionId = null, i
   if (remaining) {
     try {
       const data = JSON.parse(remaining)
+      // eslint-disable-next-line no-console
+      console.warn('query stream final chunk:', data)
       if (typeof onChunk === 'function') {
         onChunk(data)
       }
@@ -227,7 +232,11 @@ export async function getCurrentUser() {
 
 export async function listChatSessions(documentId) {
   const query = documentId ? `?document_id=${encodeURIComponent(documentId)}` : ''
-  return request(`/chat/sessions${query}`)
+  const sessions = await request(`/chat/sessions${query}`)
+  const sectionIds = Array.isArray(sessions) ? sessions.map((session) => session?.id).filter((id) => id != null) : []
+  // eslint-disable-next-line no-console
+  console.log('Chat session ids:', sectionIds)
+  return sessions
 }
 
 export async function createChatSession(documentId, title = null) {

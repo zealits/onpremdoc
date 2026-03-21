@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
-import { queryDocumentStream, getDocumentChunks } from "../api/client";
+import { queryDocumentStream, getDocumentChunks, listChatSessions } from "../api/client";
 import { useDocument } from "../api/hooks";
 
 const DEFAULT_SUGGESTED = ["What is this document about?", "Summarize the main points."];
@@ -195,9 +195,10 @@ function getStoredMessages(documentId) {
 }
 
 function saveMessages(documentId, messages) {
-  if (!documentId || !messages?.length) return;
+  if (!documentId) return;
   try {
-    localStorage.setItem(`${CHAT_STORAGE_KEY}-${documentId}`, JSON.stringify(messages));
+    const safeMessages = Array.isArray(messages) ? messages : [];
+    localStorage.setItem(`${CHAT_STORAGE_KEY}-${documentId}`, JSON.stringify(safeMessages));
   } catch {
     // quota exceeded or other
   }
@@ -369,6 +370,7 @@ function ChatPanel({
   const typingIntervalRef = useRef(null);
   const currentTypingIndexRef = useRef(0);
   const [typingPhase, setTypingPhase] = useState("chunks"); // "chunks", "content", "questions"
+  const skipNextPersistRef = useRef(true);
   
   // Mobile-specific states
   const [isMobileDevice, setIsMobileDevice] = useState(false);
@@ -516,11 +518,63 @@ function ChatPanel({
 
   // Load chat history from localStorage when document changes (or on mount)
   useEffect(() => {
-    setMessages(getStoredMessages(documentId));
+    const loaded = getStoredMessages(documentId);
+    // Skip one persist cycle immediately after loading a document's storage snapshot.
+    // This prevents old in-memory messages from being written under the new document key.
+    skipNextPersistRef.current = true;
+    // eslint-disable-next-line no-console
+    console.warn("Chat load from storage:", {
+      documentId,
+      storageKey: `${CHAT_STORAGE_KEY}-${documentId}`,
+      count: Array.isArray(loaded) ? loaded.length : 0,
+      previewRoles: Array.isArray(loaded) ? loaded.slice(0, 3).map((m) => m?.role) : [],
+    });
+    setMessages(loaded);
+  }, [documentId]);
+
+  // Log session ids as soon as a chat/document is opened.
+  useEffect(() => {
+    let active = true;
+    const loadSessionsOnOpen = async () => {
+      if (!documentId) return;
+      try {
+        const sessions = await listChatSessions(documentId);
+        if (!active) return;
+        const sectionIds = Array.isArray(sessions)
+          ? sessions.map((s) => s?.id).filter((id) => id != null)
+          : [];
+        // eslint-disable-next-line no-console
+        console.warn("Chat open session ids:", sectionIds);
+      } catch (err) {
+        if (!active) return;
+        // eslint-disable-next-line no-console
+        console.warn("Failed to load chat sessions on open:", err);
+      }
+    };
+    loadSessionsOnOpen();
+    return () => {
+      active = false;
+    };
   }, [documentId]);
 
   // Persist chat history whenever messages change
   useEffect(() => {
+    if (skipNextPersistRef.current) {
+      skipNextPersistRef.current = false;
+      // eslint-disable-next-line no-console
+      console.warn("Skipping persist during storage hydration:", {
+        documentId,
+        messageCount: Array.isArray(messages) ? messages.length : 0,
+      });
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.warn("Chat save to storage:", {
+      documentId,
+      storageKey: `${CHAT_STORAGE_KEY}-${documentId}`,
+      count: Array.isArray(messages) ? messages.length : 0,
+      lastRole: Array.isArray(messages) && messages.length ? messages[messages.length - 1]?.role : null,
+    });
     saveMessages(documentId, messages);
   }, [documentId, messages]);
 
@@ -545,6 +599,13 @@ function ChatPanel({
   const send = async (text) => {
     const q = (text || input).trim();
     if (!q || !documentId) return;
+    // eslint-disable-next-line no-console
+    console.warn("Chat send called:", {
+      documentId,
+      questionPreview: q.slice(0, 80),
+      existingMessageCount: messages.length,
+      storedSessionId: getStoredSessionId(documentId),
+    });
     setInput("");
 
     // Cancel any in-flight stream and typing effect
@@ -604,6 +665,12 @@ function ChatPanel({
             page_number: chunk.page_number,
             chunk_indices_used_for_answer: chunk.chunk_indices_used_for_answer || []
           };
+          // eslint-disable-next-line no-console
+          console.log("Chat stream ids:", {
+            session_id: responseMetadata.session_id,
+            source_chunk_ids: responseMetadata.chunk_indices_used_for_answer,
+            chunk_ids: responseMetadata.chunks.map((c) => c?.chunk_index).filter((id) => id != null),
+          });
           
           if (chunk.session_id != null) setStoredSessionId(documentId, chunk.session_id);
           
