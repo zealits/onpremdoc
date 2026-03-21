@@ -20,6 +20,7 @@ import {
   emailDocumentSummary,
   getEconomicsPipeline,
   getDocumentPageRanges,
+  getDocumentDuplicates,
   getQueryEconomics,
 } from './client'
 
@@ -171,6 +172,18 @@ export function useDocumentPageRanges(documentId, options = {}) {
   return useQuery({
     queryKey: [...documentKeys.detail(documentId), 'page_ranges'],
     queryFn: () => getDocumentPageRanges(documentId),
+    enabled: !!documentId && !!(options.enabled !== false),
+    staleTime: 5 * 60 * 1000,
+    retry: 2,
+    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 5000),
+    ...options,
+  })
+}
+
+export function useDocumentDuplicates(documentId, options = {}) {
+  return useQuery({
+    queryKey: [...documentKeys.detail(documentId), 'duplicates'],
+    queryFn: () => getDocumentDuplicates(documentId),
     enabled: !!documentId && !!(options.enabled !== false),
     staleTime: 5 * 60 * 1000,
     retry: 2,

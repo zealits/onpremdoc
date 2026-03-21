@@ -1,9 +1,10 @@
 import { useState } from 'react'
-import { useDocumentSummary, useExtractFromDocument, useEmailDocumentSummary, useDocumentPageRanges } from '../api/hooks'
+import { useDocumentSummary, useExtractFromDocument, useEmailDocumentSummary, useDocumentPageRanges, useDocumentDuplicates } from '../api/hooks'
 import ExtractModal from './ExtractModal'
 import EmailModal from './EmailModal'
 import EconomicsPipelineModal from './EconomicsPipelineModal'
 import DocumentIndexModal from './DocumentIndexModal'
+import DocumentSimilarPagesModal from './DocumentSimilarPagesModal'
 import DocumentSummaryModal from './DocumentSummaryModal'
 
 export default function DocumentToolbar({
@@ -20,6 +21,7 @@ export default function DocumentToolbar({
   const [showSummaryPanel, setShowSummaryPanel] = useState(false)
   const [showEconomics, setShowEconomics] = useState(false)
   const [showIndexPanel, setShowIndexPanel] = useState(false)
+  const [showSimilarPanel, setShowSimilarPanel] = useState(false)
 
   const { data: summaryData, refetch: refetchSummary, isFetching: summaryFetching } = useDocumentSummary(documentId, {
     enabled: !!documentId && documentReady,
@@ -31,6 +33,14 @@ export default function DocumentToolbar({
     refetch: refetchPageRanges,
   } = useDocumentPageRanges(documentId, {
     enabled: !!documentId && documentReady && showIndexPanel,
+  })
+  const {
+    data: duplicatesData,
+    isFetching: duplicatesFetching,
+    isError: duplicatesError,
+    refetch: refetchDuplicates,
+  } = useDocumentDuplicates(documentId, {
+    enabled: !!documentId && documentReady && showSimilarPanel,
   })
   const extractMutation = useExtractFromDocument(documentId)
   const emailMutation = useEmailDocumentSummary(documentId)
@@ -124,6 +134,26 @@ export default function DocumentToolbar({
             <span className="hidden sm:inline">Index</span>
           </button>
         )}
+
+        {/* Similar pages */}
+        {documentReady && (
+          <button
+            type="button"
+            onClick={() => setShowSimilarPanel(true)}
+            className="doc-toolbar-action-btn inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-sm transition-colors"
+            title="Show similar pages"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={1.8}
+                d="M8 7h8M8 12h8M8 17h5M5 5h.01M5 10h.01M5 15h.01"
+              />
+            </svg>
+            <span className="hidden sm:inline">Similar pages</span>
+          </button>
+        )}
       </div>
 
       {/* Document Summary Modal */}
@@ -148,6 +178,15 @@ export default function DocumentToolbar({
         pageRangesFetching={pageRangesFetching}
         pageRangesError={pageRangesError}
         refetchPageRanges={refetchPageRanges}
+      />
+
+      <DocumentSimilarPagesModal
+        isOpen={showSimilarPanel && documentReady}
+        onClose={() => setShowSimilarPanel(false)}
+        duplicatesData={duplicatesData}
+        duplicatesFetching={duplicatesFetching}
+        duplicatesError={duplicatesError}
+        refetchDuplicates={refetchDuplicates}
       />
 
       {showExtract && (

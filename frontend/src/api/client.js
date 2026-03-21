@@ -280,6 +280,10 @@ export async function getDocumentPageRanges(documentId) {
   return request(`/documents/${documentId}/page_ranges`)
 }
 
+export async function getDocumentDuplicates(documentId) {
+  return request(`/documents/${documentId}/duplicates`)
+}
+
 export async function getQueryEconomics(documentId, sessionId = null) {
   const params = new URLSearchParams()
   if (sessionId != null) {
