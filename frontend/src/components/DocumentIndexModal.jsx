@@ -1,5 +1,14 @@
 import { useEffect } from 'react'
 
+function stripCitationGroups(text) {
+  if (typeof text !== 'string') return ''
+  return text
+    .replace(/\^\[\s*C\d+(?:\s*,\s*C\d+)*\s*\]/gi, '')
+    .replace(/\[\s*C\d+(?:\s*,\s*C\d+)*\s*\]/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+}
+
 export default function DocumentIndexModal({
   isOpen,
   onClose,
@@ -126,7 +135,7 @@ export default function DocumentIndexModal({
                         </td>
                         <td className="px-4 py-4">
                           <p className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed">
-                            {section.summary}
+                            {stripCitationGroups(section.summary)}
                           </p>
                         </td>
                       </tr>
